@@ -282,15 +282,18 @@ async function checkCatchUp() {
   }
 
   // ── Gửi Discord notification với kết quả thực tế ──
+  // TẮT THÔNG BÁO CATCH-UP QUA DISCORD (giữ lại log console)
   if (missedJobs.length > 0) {
-    const catchUpKey = `catchup_notified_${new Date().toISOString().slice(0, 10)}`;
-    if (!global[catchUpKey]) {
-      console.log(`[scheduler] 📢 Sending catch-up notification for: ${missedJobs.map(j => j.name).join(', ')}`);
-      await _sendCatchUpNotification(missedJobs, catchUpResults);
-      global[catchUpKey] = true;
-    } else {
-      console.log('[scheduler] Catch-up notification already sent today, skipping');
-    }
+    console.log(`[scheduler] Catch-up ran for: ${missedJobs.map(j => j.name).join(', ')} (Discord notification disabled)`);
+    // Discord notification disabled — uncomment below to re-enable
+    // const catchUpKey = `catchup_notified_${new Date().toISOString().slice(0, 10)}`;
+    // if (!global[catchUpKey]) {
+    //   console.log(`[scheduler] 📢 Sending catch-up notification for: ${missedJobs.map(j => j.name).join(', ')}`);
+    //   await _sendCatchUpNotification(missedJobs, catchUpResults);
+    //   global[catchUpKey] = true;
+    // } else {
+    //   console.log('[scheduler] Catch-up notification already sent today, skipping');
+    // }
   }
 }
 
