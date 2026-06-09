@@ -1,8 +1,22 @@
 /**
  * Embedding Cache Tests — Phase 17
  */
+// Provide a dummy API key so LangChain can initialize in CI without real credentials
+process.env.GEMINI_API_KEY = process.env.GEMINI_API_KEY || 'dummy_key_for_testing';
+
 import { describe, test, expect, beforeAll, afterAll } from '@jest/globals';
 import { getCachedEmbedding, setCachedEmbedding, getCacheStats, clearCache } from '../lib/embedding_cache.js';
+
+// Mock the embeddings module to avoid real API calls in CI
+jest.mock('../lib/embeddings.js', () => ({
+  embedText: jest.fn().mockResolvedValue(new Float32Array([0.1, 0.2, 0.3])),
+  embedTextsBatch: jest.fn().mockImplementation(async (texts) => {
+    if (!texts || !Array.isArray(texts)) return [];
+    return texts.map(() => new Float32Array([0.1, 0.2, 0.3]));
+  }),
+  resetEmbeddingsModel: jest.fn(),
+}));
+
 import { embedText, embedTextsBatch } from '../lib/embeddings.js';
 
 beforeAll(async () => {
