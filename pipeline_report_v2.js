@@ -855,7 +855,7 @@ async function run(topic = null, isForce = false){
       url: post.url,
       type: 'reddit',
       category: analyzed.category,
-      score,
+      score: redditScore,
       points: post.score,
     });
   }
@@ -899,7 +899,7 @@ async function run(topic = null, isForce = false){
       url: question.link,
       type: 'stackoverflow',
       category: analyzed.category,
-      score,
+      score: soScore,
       points: question.score,
     });
   }
@@ -953,7 +953,7 @@ async function run(topic = null, isForce = false){
       url: story.url,
       type: 'hackernews',
       category: analyzed.category,
-      score,
+      score: hnScore,
       points: story.points,
     });
   }
@@ -990,7 +990,7 @@ async function run(topic = null, isForce = false){
       url: post.url,
       type: post.source || 'facebook',
       category: analyzed.category || 'Backend',
-      score,
+      score: fbScore,
     });
   }
 
