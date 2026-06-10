@@ -10,6 +10,14 @@ import { chunkText } from './lib/chunking.js';
 import { embedText, embedTextsBatch } from './lib/embeddings.js';
 import { upsertDocument } from './lib/vector_store.js';
 import { fetchWithRetry } from './lib/fetch_retry.js';
+import {
+  detectExternalSource,
+  extractDomainTag,
+  calculateSourceScore,
+  isHighValueStudy,
+  embedChunksSafe,
+  preCheckRelevanceWithLLM,
+} from './lib/source_analyzer.js';
 
 const execp = promisify(exec);
 const GITHUB_SEARCH_URL = 'https://api.github.com/search/repositories';
@@ -22,89 +30,7 @@ const YOUTUBE_MAX_RESULTS = Number(process.env.YOUTUBE_MAX_RESULTS || 3);
 const YOUTUBE_MIN_VIEWS = Number(process.env.YOUTUBE_MIN_VIEWS || 50000);
 const YOUTUBE_ORDER = process.env.YOUTUBE_ORDER || 'viewCount';
 
-// ── URL Parser — Nhận diện domain đích từ URL ──
-function detectExternalSource(url) {
-  if (!url) return '';
-  const u = url.toLowerCase();
-  if (u.includes('github.com')) return '[GitHub]';
-  if (u.includes('youtube.com') || u.includes('youtu.be')) return '[YouTube]';
-  if (u.includes('medium.com') || u.includes('dev.to') || u.includes('hashnode')) return '[Blog]';
-  if (u.includes('arxiv.org')) return '[arXiv]';
-  if (u.includes('stackoverflow.com')) return '[StackOverflow]';
-  if (u.includes('docs.google.com') || u.includes('drive.google.com')) return '[GoogleDocs]';
-  if (u.includes('notion.so') || u.includes('notion.site')) return '[Notion]';
-  if (u.includes('figma.com')) return '[Figma]';
-  if (u.includes('twitter.com') || u.includes('x.com')) return '[Twitter]';
-  if (u.includes('linkedin.com')) return '[LinkedIn]';
-  return '';
-}
 
-/**
- * Trích xuất domain key từ tag detectExternalSource để thêm vào tags array.
- * Ví dụ: '[GitHub]' → 'github', '[YouTube]' → 'youtube'
- */
-function extractDomainTag(tag) {
-  if (!tag) return '';
-  return tag.replace(/[\[\]]/g, '').toLowerCase();
-}
-
-// ── Score Calculator — Tính điểm chất lượng nguồn (0-1) ──
-// Buffed scores: base 0.6, hệ số chia lớn hơn để nâng điểm trung bình
-function calculateSourceScore({ type, stars, views, points, relevanceConfidence, isRelevant }) {
-  let score = 0.6; // Base score: từ 0.5 → 0.6
-
-  switch (type) {
-    case 'repo': {
-      // GitHub: dựa trên stars (log scale), giảm độ gắt
-      if (stars) {
-        score = Math.min(1.0, Math.log10(stars + 1) / 5); // 100k stars → ~1.0, 1k → ~0.6
-      }
-      break;
-    }
-    case 'video': {
-      // YouTube: dựa trên views (log scale), giảm độ gắt
-      if (views) {
-        score = Math.min(1.0, Math.log10(views + 1) / 6); // 1M views → ~1.0, 10k → ~0.67
-      }
-      break;
-    }
-    case 'reddit': {
-      // Reddit: giảm từ /4 → /3.0 để nâng điểm
-      if (points) {
-        score = Math.min(1.0, Math.log10(points + 1) / 3.0);
-      }
-      break;
-    }
-    case 'stackoverflow': {
-      // StackOverflow: giảm từ /3 → /2.5 để nâng điểm
-      if (points) {
-        score = Math.min(1.0, Math.log10(points + 1) / 2.5);
-      }
-      break;
-    }
-    case 'hackernews': {
-      // HN: giảm từ /3.5 → /3.0 để nâng điểm
-      if (points) {
-        score = Math.min(1.0, Math.log10(points + 1) / 3.0);
-      }
-      break;
-    }
-    case 'arxiv': {
-      // arXiv: base score cao vì là academic paper
-      score = 0.75;
-      break;
-    }
-    default:
-      score = 0.6;
-  }
-
-  // Relevance gate bonus/penalty (nhẹ hơn)
-  if (isRelevant === false) score *= 0.5; // từ 0.3 → 0.5
-  if (relevanceConfidence === 'high') score *= 1.1;
-  if (relevanceConfidence === 'low') score *= 0.85; // từ 0.8 → 0.85
-
-  return Math.min(1.0, Math.max(0, score));
-}
 
 // ── Đã tinh chỉnh: Xóa Web Dev, dồn trọng tâm vào Backend, DevOps, C/C++, Java & AGI ──
 const DEV_TOPICS = [
@@ -123,38 +49,8 @@ const DEV_TOPICS = [
   'System design case studies for scalable platforms',
 ];
 
-// ── Active Recall Flagging — Đánh dấu tài liệu chất lượng cao ──
-// Nếu score > 0.85 → đánh dấu isHighValueStudy để phục vụ Spaced Repetition
-const HIGH_VALUE_THRESHOLD = 0.85;
 
-function isHighValueStudy(score) {
-  return score >= HIGH_VALUE_THRESHOLD;
-}
 
-// ── Tối ưu hóa API: Chia nhỏ Batch để chống lỗi 413 Payload Too Large ──
-async function embedChunksSafe(chunks) {
-  const MAX_BATCH_SIZE = 100; // Ngưỡng an toàn cho hầu hết các LLM API
-  const allEmbeddings = [];
-
-  try {
-    for (let i = 0; i < chunks.length; i += MAX_BATCH_SIZE) {
-      const batch = chunks.slice(i, i + MAX_BATCH_SIZE);
-      const batchEmbeddings = await embedTextsBatch(batch);
-      allEmbeddings.push(...batchEmbeddings);
-      // Ngủ 200ms giữa các batch để tránh bị Rate Limit
-      await new Promise(resolve => setTimeout(resolve, 200));
-    }
-    return allEmbeddings;
-  } catch (err) {
-    console.warn('[pipeline_report_v2] embedTextsBatch failed, falling back to embedText per chunk:', err?.message || err);
-    // Fallback cực đoan: Lặp qua từng chunk nếu API Batch sập
-    const fallbackEmbeddings = [];
-    for (const c of chunks) {
-      fallbackEmbeddings.push(await embedText(c));
-    }
-    return fallbackEmbeddings;
-  }
-}
 
 async function githubSearch(topic, perPage = GITHUB_PER_PAGE, minStars = GITHUB_MIN_STARS, createdAfter = GITHUB_CREATED_AFTER){
   const q = `${topic} stars:>=${minStars} created:>=${createdAfter}`;
@@ -274,84 +170,6 @@ async function preCheckRelevance(title, description){
     console.log('[preCheckRelevance] Gatekeeper rejected:', result.reason);
   }
   return result;
-}
-
-async function preCheckRelevanceWithLLM(title, description){
-  const apiKey = process.env.GOOGLE_API_KEY || process.env.Google_API_KEY;
-  if(!apiKey){
-    console.warn('[preCheckRelevance] GOOGLE_API_KEY not set, using heuristic fallback');
-    return heuristicRelevance(title, description);
-  }
-
-  const systemPrompt = `You are a Senior Tech Lead with 20 years of experience evaluating technical content quality. Your role is to distinguish between SOFTWARE ENGINEERING content and non-technical content with precision.
-
-CRITICAL DISTINCTION:
-- "System Design" in SOFTWARE ENGINEERING = Distributed systems, APIs, databases, microservices, cloud architecture, load balancing, caching strategies, scalability patterns
-- "System Design" in OTHER DOMAINS = Architecture, interior design, roof systems, furniture layouts, building structures
-
-DECISION CRITERIA (STRICT):
-1. Does the content contain technical implementation details (code, architecture diagrams, infrastructure)?
-2. Does it discuss software systems, backend infrastructure, DevOps, or software architecture?
-3. Is the target audience software engineers, developers, or tech professionals?
-
-Return JSON with exactly: {"isRelevant": boolean, "confidence": 0-100, "reason": "brief explanation"}`;
-
-  const userPrompt = `Title: "${title}"
-Description: "${description}"
-
-Evaluate if this is legitimate software engineering content or misleading/non-technical content.`;
-
-  try{
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent`;
-    const body = {
-      system: [{ text: systemPrompt }],
-      contents: [
-        {
-          parts: [{ text: userPrompt }]
-        }
-      ],
-      generationConfig: {
-        temperature: 0,
-        maxOutputTokens: 200,
-      }
-    };
-    const res = await fetchWithRetry(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-      body: JSON.stringify(body),
-    });
-    if(!res.ok){
-      console.warn('[preCheckRelevance] LLM API error, falling back to heuristic');
-      return heuristicRelevance(title, description);
-    }
-    const j = await res.json();
-    const raw = j?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-    const match = String(raw).match(/\{[\s\S]*\}$/m);
-    if(!match) {
-      return heuristicRelevance(title, description);
-    }
-    const parsed = JSON.parse(match[0]);
-    // Normalize confidence: LLM có thể trả về number (0-100) hoặc string ('high'/'medium'/'low')
-    let confidenceStr = 'medium';
-    if (typeof parsed.confidence === 'number') {
-      confidenceStr = parsed.confidence >= 70 ? 'high' : parsed.confidence >= 40 ? 'medium' : 'low';
-    } else if (typeof parsed.confidence === 'string') {
-      confidenceStr = parsed.confidence;
-    }
-    // Normalize score: đảm bảo luôn có giá trị mặc định
-    const score = (typeof parsed.score === 'number' && !isNaN(parsed.score))
-      ? Math.max(0, Math.min(1, parsed.score))
-      : (parsed.isRelevant ? 0.6 : 0.2);
-    return {
-      isRelevant: Boolean(parsed.isRelevant),
-      confidence: confidenceStr,
-      reason: String(parsed.reason || 'No reason provided'),
-      score,
-    };
-  }catch(e){
-    console.warn('[preCheckRelevance] LLM request failed, falling back to heuristic');
-    return heuristicRelevance(title, description);
-  }
 }
 
 async function youtubeSearchVideos(topic, maxResults = YOUTUBE_MAX_RESULTS, minViews = YOUTUBE_MIN_VIEWS){

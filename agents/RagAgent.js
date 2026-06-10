@@ -1,5 +1,7 @@
 import 'dotenv/config';
 import { HumanMessage } from '@langchain/core/messages';
+import fs from 'fs';
+import path from 'path';
 
 import { ask as llmAsk } from '../lib/llm.js';
 import { getLogger } from '../lib/logger.js';
@@ -519,57 +521,56 @@ async function webScout(query) {
     return true;
   });
 
-  // ── Diversification: Loại source đã dùng gần đây để tránh trùng lặp ──
-  // Lấy danh sách source IDs đã dùng trong 24h qua từ embedding cache
-  const recentSourceKeys = getRecentSourceKeys();
-  if (recentSourceKeys.size > 0) {
-    const before = deduped.length;
-    // Giữ lại source mới, ưu tiên source chưa dùng gần đây
-    const fresh = deduped.filter(r => {
-      const key = (r.url || r.title || '').toLowerCase().slice(0, 50);
-      return !recentSourceKeys.has(key);
-    });
-    // Nếu có source mới → dùng source mới, không thì dùng tất cả
+  // ── Diversification: Loại source đã dùng gần đây (persist via file) ──
+  const queryKey = query.toLowerCase().trim().slice(0, 50);
+  const recentSources = loadRecentSources();
+  const cutoff = Date.now() - 8 * 3600 * 1000;
+  const usedSourceIds = new Set();
+  for (const entries of Object.values(recentSources)) {
+    for (const entry of (entries || [])) {
+      if (entry.ts > cutoff) usedSourceIds.add(entry.sourceId);
+    }
+  }
+  if (usedSourceIds.size > 0) {
+    const fresh = deduped.filter(r => !usedSourceIds.has((r.url || r.title || '').toLowerCase().slice(0, 60)));
     if (fresh.length > 0) {
-      logger.info(`[WebScout] Diversification: ${fresh.length}/${before} fresh sources (excluded ${before - fresh.length} recent)`);
-      // Lưu source keys hiện tại cho lần sau
-      deduped.forEach(r => addRecentSourceKey((r.url || r.title || '').toLowerCase().slice(0, 50)));
+      logger.info(`[WebScout] Diversification: ${fresh.length}/${deduped.length} fresh sources`);
+      saveRecentSources(queryKey, deduped.map(r => ({ sourceId: (r.url || r.title || '').toLowerCase().slice(0, 60), ts: Date.now() })));
       return fresh.slice(0, webSearchLimit);
     }
-  } else {
-    // Lần đầu → lưu source keys
-    deduped.forEach(r => addRecentSourceKey((r.url || r.title || '').toLowerCase().slice(0, 50)));
   }
+  saveRecentSources(queryKey, deduped.map(r => ({ sourceId: (r.url || r.title || '').toLowerCase().slice(0, 60), ts: Date.now() })));
 
   logger.info(`[WebScout] Total: ${deduped.length} results (YouTube + GitHub + Hybrid)`);
   return deduped.slice(0, webSearchLimit);
 }
 
-// ─── Recent Source Keys (Diversification) ──────────────────
-// Lưu source keys đã dùng gần đây để tránh trùng lặp khi query giống nhau
-const recentSourceMap = new Map(); // key → timestamp
-
-function getRecentSourceKeys() {
-  const cutoff = Date.now() - 4 * 3600 * 1000; // 4 giờ
-  const keys = new Set();
-  for (const [key, ts] of recentSourceMap) {
-    if (ts > cutoff) keys.add(key);
-    else recentSourceMap.delete(key); // Cleanup old entries
-  }
-  return keys;
+// ─── Recent Source Persistence ─────────────────────────────
+const SOURCES_FILE = path.join(process.cwd(), '.recent_sources.json');
+function loadRecentSources() {
+  try {
+    if (fs.existsSync(SOURCES_FILE)) {
+      const data = JSON.parse(fs.readFileSync(SOURCES_FILE, 'utf8'));
+      const cutoff = Date.now() - 8 * 3600 * 1000;
+      const cleaned = {};
+      for (const [qk, entries] of Object.entries(data)) {
+        const fresh = (entries || []).filter(e => e.ts > cutoff);
+        if (fresh.length > 0) cleaned[qk] = fresh;
+      }
+      return cleaned;
+    }
+  } catch { /* ignore */ }
+  return {};
 }
-
-function addRecentSourceKey(key) {
-  recentSourceMap.set(key, Date.now());
-  // Giới hạn max 500 entries
-  if (recentSourceMap.size > 500) {
-    const oldest = recentSourceMap.keys().next().value;
-    recentSourceMap.delete(oldest);
-  }
+function saveRecentSources(queryKey, sourceIds) {
+  try {
+    const data = loadRecentSources();
+    data[queryKey] = sourceIds;
+    const keys = Object.keys(data);
+    if (keys.length > 100) delete data[keys.sort()[0]];
+    fs.writeFileSync(SOURCES_FILE, JSON.stringify(data), 'utf8');
+  } catch { /* ignore */ }
 }
-
-// Export for testing
-export { getRecentSourceKeys, addRecentSourceKey };
 
 // ─── YouTube Search ────────────────────────────────────────
 async function searchYouTube(query) {
