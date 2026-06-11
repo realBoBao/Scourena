@@ -530,55 +530,65 @@ async function webScout(query) {
     return true;
   });
 
-  // ── Diversification: Loại source đã dùng gần đây (persist via file) ──
-  const queryKey = query.toLowerCase().trim().slice(0, 50);
-  const recentSources = loadRecentSources();
-  const cutoff = Date.now() - 8 * 3600 * 1000;
-  const usedSourceIds = new Set();
-  for (const entries of Object.values(recentSources)) {
-    for (const entry of (entries || [])) {
-      if (entry.ts > cutoff) usedSourceIds.add(entry.sourceId);
-    }
+  // ── Diversification: Nếu query giống query gần đây → skip web search ──
+  const queryFingerprint = query.toLowerCase().trim().slice(0, 80);
+  if (isDuplicateQuery(queryFingerprint)) {
+    logger.info(`[WebScout] Duplicate query detected — skipping web search`);
+    // Chỉ trả về local results (nếu có), không search web
+    const localOnly = deduped.filter(r => r.source === 'local' || r.type === 'local');
+    return localOnly.slice(0, webSearchLimit);
   }
-  if (usedSourceIds.size > 0) {
-    const fresh = deduped.filter(r => !usedSourceIds.has((r.url || r.title || '').toLowerCase().slice(0, 60)));
-    if (fresh.length > 0) {
-      logger.info(`[WebScout] Diversification: ${fresh.length}/${deduped.length} fresh sources`);
-      saveRecentSources(queryKey, deduped.map(r => ({ sourceId: (r.url || r.title || '').toLowerCase().slice(0, 60), ts: Date.now() })));
-      return fresh.slice(0, webSearchLimit);
-    }
-  }
-  saveRecentSources(queryKey, deduped.map(r => ({ sourceId: (r.url || r.title || '').toLowerCase().slice(0, 60), ts: Date.now() })));
+  // Lưu query fingerprint cho lần sau
+  saveQueryFingerprint(queryFingerprint);
 
   logger.info(`[WebScout] Total: ${deduped.length} results (YouTube + GitHub + Hybrid)`);
   return deduped.slice(0, webSearchLimit);
 }
 
-// ─── Recent Source Persistence ─────────────────────────────
-const SOURCES_FILE = path.join(process.cwd(), '.recent_sources.json');
-function loadRecentSources() {
+// ─── Query Deduplication ───────────────────────────────────
+// Nếu query giống query trong 4h qua → bỏ qua web search
+const QUERY_DEDUP_FILE = path.join(process.cwd(), '.query_dedup.json');
+
+function isDuplicateQuery(fingerprint) {
   try {
-    if (fs.existsSync(SOURCES_FILE)) {
-      const data = JSON.parse(fs.readFileSync(SOURCES_FILE, 'utf8'));
-      const cutoff = Date.now() - 8 * 3600 * 1000;
-      const cleaned = {};
-      for (const [qk, entries] of Object.entries(data)) {
-        const fresh = (entries || []).filter(e => e.ts > cutoff);
-        if (fresh.length > 0) cleaned[qk] = fresh;
+    if (fs.existsSync(QUERY_DEDUP_FILE)) {
+      const data = JSON.parse(fs.readFileSync(QUERY_DEDUP_FILE, 'utf8'));
+      const cutoff = Date.now() - 4 * 3600 * 1000; // 4 giờ
+      for (const [fp, ts] of Object.entries(data)) {
+        if (ts > cutoff && isSimilarQuery(fp, fingerprint)) {
+          return true;
+        }
       }
-      return cleaned;
     }
   } catch { /* ignore */ }
-  return {};
+  return false;
 }
-function saveRecentSources(queryKey, sourceIds) {
+
+function saveQueryFingerprint(fingerprint) {
   try {
-    const data = loadRecentSources();
-    data[queryKey] = sourceIds;
-    const keys = Object.keys(data);
-    if (keys.length > 100) delete data[keys.sort()[0]];
-    fs.writeFileSync(SOURCES_FILE, JSON.stringify(data), 'utf8');
+    let data = {};
+    if (fs.existsSync(QUERY_DEDUP_FILE)) {
+      data = JSON.parse(fs.readFileSync(QUERY_DEDUP_FILE, 'utf8'));
+    }
+    data[fingerprint] = Date.now();
+    // Cleanup old entries
+    const cutoff = Date.now() - 4 * 3600 * 1000;
+    for (const [fp, ts] of Object.entries(data)) {
+      if (ts < cutoff) delete data[fp];
+    }
+    fs.writeFileSync(QUERY_DEDUP_FILE, JSON.stringify(data), 'utf8');
   } catch { /* ignore */ }
+}
+
+// So sánh 2 query → trả về true nếu giống nhau (>90% similarity)
+function isSimilarQuery(a, b) {
+  if (a === b) return true;
+  // So sánh word overlap
+  const wordsA = new Set(a.split(/\s+/));
+  const wordsB = new Set(b.split(/\s+/));
+  const intersection = new Set([...wordsA].filter(w => wordsB.has(w)));
+  const union = new Set([...wordsA, ...wordsB]);
+  return intersection.size / union.size > 0.8;
 }
 
 // ─── YouTube Search ────────────────────────────────────────
