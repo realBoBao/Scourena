@@ -215,6 +215,7 @@ const INTENT_KEYWORDS = {
   INCIDENT: ['!incident', 'chaos', 'sự cố', 'production incident', '3am alert'],
   ANALYZE: ['!analyze', 'phân tích', 'analyze', 'tổng hợp', 'code quality'],
   AUDIT: ['!audit', 'security audit', 'quét bảo mật', 'vulnerability scan'],
+  PROFILE: ['!profile', 'hồ sơ', 'profile', 'thống kê học tập'],
   PERF: ['!perf', 'performance', 'benchmark', 'profiling'],
   LOGS: ['!logs', 'log analysis', 'phân tích log', 'error log'],
   RAG: ['!ask', 'tìm kiếm', 'search', 'hỏi', 'giải thích', 'là gì', 'như thế nào'],
@@ -402,7 +403,7 @@ client.on(Events.MessageCreate, async (message) => {
     }
 
     // ── !profile command: Xem hồ sơ học tập ──
-    if (message.content === '!profile' || message.content.startsWith('!profile ')) {
+    if (intent === 'PROFILE' || message.content === '!profile' || message.content.startsWith('!profile ')) {
       try {
         const { userProfileManager } = await import('./lib/user_profile.js');
         const userId = message.author.id;
