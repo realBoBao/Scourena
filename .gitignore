@@ -72,3 +72,9 @@ debug_*.mjs
 debug_*.js
 check_*.mjs
 check_*.js
+
+# ═══════════════════════════════════════════════════════════
+# RUNTIME DATA — Generated at runtime, not for git
+# ═══════════════════════════════════════════════════════════
+.query_dedup.json
+.scheduler_last_run.json
