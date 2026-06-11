@@ -29,15 +29,12 @@ jobs:
             echo "=== Starting deployment at $(date) ==="
             
             # Navigate to project directory
-            cd ~/my-ai-brain || cd ~/ai-brain || cd /home/${USER}/my-ai-brain || { echo "❌ Project dir not found"; exit 1; }
+            cd ~/ai-brain || { echo "❌ Project dir not found"; exit 1; }
             echo "📁 Working dir: $(pwd)"
             
             echo "📥 Pulling latest code..."
-            # Try SSH first, then HTTPS with token
-            GIT_SSH_COMMAND="ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no" git pull origin main 2>&1 \
-              || git remote set-url origin https://${{ secrets.GITHUB_TOKEN }}@github.com/realBoBao/Serena_Project00_Auto-Teaching.git 2>&1 \
-              && git pull origin main 2>&1 \
-              || { echo "❌ Git pull failed"; exit 1; }
+            # Use HTTPS with PAT (Personal Access Token) stored on server
+            git pull https://${{ secrets.DEPLOY_TOKEN }}@github.com/realBoBao/Serena_Project00_Auto-Teaching.git main 2>&1
             
             echo "📦 Installing dependencies..."
             npm ci --only-production 2>&1 | tail -5

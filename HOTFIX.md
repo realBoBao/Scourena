@@ -1,28 +1,32 @@
 # 🔥 HOTFIX — Production Server Issues
 
-## 0. CI/CD Deploy — SSH Permission Denied
+## 0. CI/CD Deploy — Git Pull Failed
 
-**Error:** `***@***: Permission denied (publickey)`
+**Error:** `fatal: could not read Username/Password for 'https://github.com'`
 
-**Nguyên nhân:** SSH key trong GitHub Secrets (`GCP_SSH_KEY`) không khớp với server.
+**Nguyên nhân:** Git pull không có credential. SSH key không work, và `GITHUB_TOKEN` không có trong deploy context.
 
-**Fix trên GitHub:**
-1. Vào repo → Settings → Secrets and variables → Actions
-2. Kiểm tra `GCP_SSH_KEY` có đúng private key không
-3. Nếu key mới, cần update cả 3 secrets:
-   - `GCP_HOST` — IP/domain của VPS
-   - `GCP_USERNAME` — username SSH (ví dụ: `realBoBao`)
-   - `GCP_SSH_KEY` — nội dung file `~/.ssh/id_rsa` (private key)
+**Fix — Tạo PAT (Personal Access Token):**
 
-**Tạo SSH key mới (nếu cần):**
+1. Trên GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic)
+2. Tạo token mới với quyền `repo`
+3. Vào repo `Serena_Project00_Auto-Teaching` → Settings → Secrets → Actions
+4. Thêm secret mới: `DEPLOY_TOKEN` = giátrị PAT
+
+**Hoặc dùng cách đơn giản hơn — git pull không cần auth nếu repo public:**
 ```bash
-# Trên local machine
-ssh-keygen -t ed25519 -C "github-actions-deploy"
-# Copy public key lên server
-ssh-copy-id -i ~/.ssh/id_ed25519.pub realBoBao@server_host
-# Copy private key vào GitHub Secrets
-cat ~/.ssh/id_ed25519
+# Trên server, chạy 1 lần:
+cd ~/ai-brain
+git remote set-url origin https://github.com/realBoBao/Serena_Project00_Auto-Teaching.git
+# Nếu repo private, cần PAT như trên
 ```
+
+**Secrets cần có trong GitHub Actions:**
+- `GCP_HOST` — IP/domain của VPS
+- `GCP_USERNAME` — username SSH
+- `GCP_SSH_KEY` — private key SSH
+- `DEPLOY_TOKEN` — GitHub PAT (cho git pull HTTPS)
+- `DISCORD_WEBHOOK` — Discord webhook URL (cho notifications)
 
 ## 1. `Pipeline error: score is not defined`
 
