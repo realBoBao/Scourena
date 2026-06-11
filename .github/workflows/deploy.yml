@@ -24,26 +24,22 @@ jobs:
           username: ${{ secrets.GCP_USERNAME }}
           key: ${{ secrets.GCP_SSH_KEY }}
           timeout: 120s
+          envs: GH_PAT
           script: |
             set -e
             echo "=== Starting deployment at $(date) ==="
-            
-            # Navigate to project directory
             cd ~/ai-brain || { echo "❌ Project dir not found"; exit 1; }
             echo "📁 Working dir: $(pwd)"
-            
             echo "📥 Pulling latest code..."
-            # Use HTTPS with PAT — format: https://x-access-token:TOKEN@github.com/...
-            git pull https://x-access-token:${{ secrets.GH_PAT }}@github.com/realBoBao/Serena_Project00_Auto-Teaching.git main 2>&1
-            
+            git pull https://x-access-token:${GH_PAT}@github.com/realBoBao/Serena_Project00_Auto-Teaching.git main
             echo "📦 Installing dependencies..."
             npm ci --only-production 2>&1 | tail -5
-            
             echo "🔄 Restarting PM2..."
-            pm2 restart AI_Brain --update-env 2>&1 || pm2 start ecosystem.config.cjs
+            pm2 restart AI_Brain --update-env || pm2 start ecosystem.config.cjs
             pm2 save
-            
             echo "✅ Deployment complete at $(date)"
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
 
       - name: Notify Discord (Success)
         if: success()
