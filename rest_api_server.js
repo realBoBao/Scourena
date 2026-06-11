@@ -25,6 +25,7 @@ import { getGraphStats, searchEntities, exportGraphForVisualization } from './li
 import { getEvaluationStats, getModelPerformanceReport, getAllABTestResults, detectKnowledgeGaps } from './lib/self_evolution.js';
 import { listVideos, cleanupOldVideos } from './lib/video_cdn.js';
 import { generateLearningPath, formatLearningPath } from './lib/learning_path.js';
+import { getSecurityHeaders, validateApiKey, isIpAllowed, checkBodySize, auditLog } from './lib/security.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.resolve('./public');
@@ -37,12 +38,16 @@ if (!API_KEY) {
   console.warn('[REST API] Set REST_API_KEY in .env and restart to enable API access.');
 }
 
-// ── Auth Middleware ──
+// ── Auth Middleware (supports API key rotation) ──
 function authenticate(req) {
   const authHeader = req.headers['authorization'] || '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
-  if (token !== API_KEY) {
-    return { ok: false, error: 'Unauthorized', status: 401 };
+  if (!token) {
+    return { ok: false, error: 'Missing Authorization header', status: 401 };
+  }
+  if (!validateApiKey(token)) {
+    auditLog(req, { action: 'auth_failed', status: 'denied', details: { tokenPrefix: token.slice(0, 8) } });
+    return { ok: false, error: 'Unauthorized — invalid API key', status: 401 };
   }
   return { ok: true };
 }
@@ -76,11 +81,15 @@ function checkRateLimit(clientIp) {
   return { ok: true };
 }
 
-// ── JSON Response Helper ──
+// ── JSON Response Helper (with security headers) ──
 function json(res, data, status = 200) {
+  const secHeaders = getSecurityHeaders();
   res.writeHead(status, {
     'Content-Type': 'application/json',
-    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Origin': process.env.CORS_ORIGIN || '*',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    ...secHeaders,
   });
   res.end(JSON.stringify(data));
 }
@@ -565,10 +574,20 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Rate limiting
+  // IP filtering
   const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+  if (!isIpAllowed(clientIp)) {
+    auditLog(req, { action: 'ip_blocked', status: 'denied' });
+    return json(res, { error: 'Forbidden — IP not allowed' }, 403);
+  }
+
+  // Rate limiting
   const rl = checkRateLimit(clientIp);
   if (!rl.ok) return json(res, { error: rl.error }, rl.status);
+
+  // Body size check
+  const bodySize = checkBodySize(req.headers['content-length']);
+  if (!bodySize.ok) return json(res, { error: bodySize.error }, 413);
 
   // Route matching
   const matched = matchRoute(method, pathname);

@@ -1,7 +1,9 @@
 # 📋 TODO — my-ai-brain Roadmap
 
-> **Cập nhật:** 2026-06-10 23:00
-> **Test Coverage:** 320/322 PASS (99.4%) | **Flashcards:** 198 cards | **Uptime:** 24/7 PM2
+> **Cập nhật:** 2026-06-11 06:00
+> **Test Coverage:** 320/320 PASS (100%) | **Flashcards:** 198 cards | **Uptime:** 24/7 PM2
+> **PM2 Services:** 10/10 online | **Redis:** In-memory fallback mode | **Security:** CSP + CORS + API key rotation + IP filtering + Audit log
+> **API:** 30+ REST endpoints | **PWA:** Mobile companion with voice input + offline sync | **Knowledge Graph:** SQLite-backed with D3.js visualization
 
 ---
 
