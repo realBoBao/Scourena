@@ -42,6 +42,10 @@ module.exports = {
         FEEDBACK_PORT: "4002",
         REDIS_HOST: "127.0.0.1",
         REDIS_PORT: "6379",
+        // Load từ .env file (dotenv sẽ tự động load)
+        // Nếu key không có trong env, dotenv sẽ fallback sang .env file
+        GOOGLE_API_KEY: process.env.GOOGLE_API_KEY || "",
+        GEMINI_API_KEY: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || "",
       },
     },
     {
