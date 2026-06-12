@@ -35,7 +35,9 @@ jobs:
             git checkout -- .scheduler_last_run.json data/processed.json 2>/dev/null || true
             git pull https://x-access-token:${GH_PAT}@github.com/realBoBao/Serena_Project00_Auto-Teaching.git main
             echo "📦 Installing dependencies..."
-            npm ci --only-production 2>&1 | tail -5
+            # Use npm install to avoid lock file sync issues between Node versions
+            rm -f package-lock.json
+            npm install --legacy-peer-deps --only-production 2>&1 | tail -5
             echo "🔄 Restarting PM2..."
             pm2 restart AI_Brain --update-env || pm2 start ecosystem.config.cjs
             pm2 save
