@@ -10,6 +10,18 @@ import { chunkText } from './lib/chunking.js';
 import { embedText, embedTextsBatch } from './lib/embeddings.js';
 import { upsertDocument } from './lib/vector_store.js';
 import { fetchWithRetry } from './lib/fetch_retry.js';
+
+// ── Deduplication helper ──
+// Loại bỏ duplicate sources dựa trên URL (cùng URL từ nhiều sources chỉ giữ 1)
+function dedupSources(sources) {
+  const seen = new Map();
+  for (const s of sources) {
+    const key = (s.url || s.title || '').toLowerCase().trim();
+    if (!key) continue;
+    if (!seen.has(key)) seen.set(key, s);
+  }
+  return Array.from(seen.values());
+}
 import {
   detectExternalSource,
   extractDomainTag,
