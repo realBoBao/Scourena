@@ -141,6 +141,15 @@ async function applyConfidenceScoring({ question, answer, results, jaccardSim, s
     const suffix = scorer.ConfidenceScorer.formatDiscordSuffix(confidence);
     const finalAnswer = suffix ? answer + suffix : answer;
 
+    // ── Semantic Cache: store successful Q&A for future reuse ──────────────
+    try {
+      const cache = await getSemanticCache();
+      const queryEmbedding = await embedTextCached(question);
+      await cache.set(queryEmbedding, finalAnswer, question);
+    } catch (cacheErr) {
+      logger.debug('[SemanticCache] Set failed:', cacheErr?.message || cacheErr);
+    }
+
     return {
       answer: finalAnswer,
       confidence,
@@ -1057,6 +1066,17 @@ function formatRetrievedSnippets(results) {
     .join('\n');
 }
 
+// ── Semantic Cache (lazy singleton) ────────────────────────────────────────
+let _semanticCache = null;
+async function getSemanticCache() {
+  if (!_semanticCache) {
+    const { SemanticCache } = await import('../lib/semantic_cache.js');
+    _semanticCache = new SemanticCache({ threshold: 0.92, maxEntries: 500 });
+    await _semanticCache.initialize();
+  }
+  return _semanticCache;
+}
+
 export async function answerQuestion(query, options = {}) {
   const cleanQuery = String(query || '').trim();
   if (!cleanQuery) {
@@ -1065,6 +1085,27 @@ export async function answerQuestion(query, options = {}) {
       source: 'validation',
       results: [],
     };
+  }
+
+  // ── Semantic Cache check (skip for deep search or cache bypass) ──────────
+  if (!options.skipCache && !options.isDeep) {
+    try {
+      const cache = await getSemanticCache();
+      const queryEmbedding = await embedTextCached(cleanQuery);
+      const cached = await cache.get(queryEmbedding);
+      if (cached) {
+        logger.info(`[SemanticCache] HIT for: "${cleanQuery.slice(0, 50)}..." (sim: ${cached.similarity.toFixed(2)})`);
+        return {
+          answer: cached.answer,
+          source: 'cache',
+          results: [],
+          confidence: { score: 0.95, level: 'high', signals: {}, usedSelfCheck: false },
+          fromCache: true,
+        };
+      }
+    } catch (err) {
+      logger.debug('[SemanticCache] Check failed:', err?.message || err);
+    }
   }
 
   // ── Deep Search mode: tăng sources + web search ──
