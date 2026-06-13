@@ -2,6 +2,9 @@ import { spawn } from 'child_process';
 import cron from 'node-cron';
 import { addJob, JobType, QueueName } from './lib/task_queue.js';
 
+// Cron schedule theo UTC (PDT = UTC-7)
+// 8AM PDT = 15:00 UTC, 8PM PDT = 03:00 UTC (ngày hôm sau)
+// Dùng timezone 'America/Los_Angeles' để cron tự động chuyển đổi
 const CRON_SCHEDULE = process.env.CRON_SCHEDULE || '0 8,20 * * *';
 const RUN_ON_START = process.env.RUN_ON_START !== 'false';
 const FORCE_RUN = process.env.FORCE_PIPELINE === 'true';
@@ -453,6 +456,8 @@ if (RUN_ON_START) {
 const task = cron.schedule(CRON_SCHEDULE, () => {
   console.log('[scheduler] Cron triggered at', new Date().toISOString());
   runPipeline(); // runPipeline tự ghi saveLastRun khi xong
+}, {
+  timezone: 'America/Los_Angeles', // PDT — tự động adjust DST
 });
 
 // Memory consolidation: 2:00 AM mỗi ngày
