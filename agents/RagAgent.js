@@ -1001,6 +1001,20 @@ async function synthesizeAnswer(query, context, sourceType, userId = null) {
     answer = `⚠️ LLM tạm thời không khả dụng (rate limited). Dưới đây là thông tin tham khảo:\n\n${contextSummary}`;
   }
 
+  // ── Grounding Verify: Ép LLM trích dẫn nguồn ──
+  if (answer && answer.length > 100 && results?.length > 0) {
+    try {
+      const { verifyWithCitation, formatDisclaimer } = await import('../lib/grounding_verifier.js');
+      const grounding = await verifyWithCitation(query, answer, results, ask);
+
+      if (!grounding.verified) {
+        const disclaimer = formatDisclaimer(grounding);
+        answer = answer + disclaimer;
+        logger.info(`[RagAgent] Grounding: ungrounded answer flagged (${grounding.unsupportedClaims?.length || 0} unsupported claims)`);
+      }
+    } catch { /* grounding optional */ }
+  }
+
   // ── Mem0: Record Q&A for future context ──
   if (userId && answer && answer.length > 50) {
     try {

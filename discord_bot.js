@@ -266,7 +266,16 @@ async function classifyIntentAsync(text) {
     }
   }
 
-  // 4. Default: RAG
+  // 4. Scope check — nếu out of scope → trả về 'OUT_OF_SCOPE'
+  try {
+    const { checkScope } = await import('./lib/scope_detector.js');
+    const scope = checkScope(text);
+    if (!scope.inScope) {
+      return 'OUT_OF_SCOPE';
+    }
+  } catch { /* scope detector fail → continue normally */ }
+
+  // 5. Default: RAG
   return 'RAG';
 }
 
@@ -403,6 +412,16 @@ client.on(Events.MessageCreate, async (message) => {
 
     // Nếu không match command nào, bỏ qua
     if (!message.content.startsWith('!') && !message.content.startsWith(prefix)) return;
+
+    // ── Out of Scope: Câu hỏi nằm ngoài khả năng ──
+    if (intent === 'OUT_OF_SCOPE') {
+      return message.reply({
+        content: '⚠️ Câu hỏi này nằm ngoài phạm vi kiến thức của tôi.\n\n' +
+          'Tôi chuyên về: **lập trình, thuật toán, system design, DevOps, ML/AI**.\n' +
+          'Hãy thử hỏi về các chủ đề kỹ thuật, hoặc dùng `!help` để xem danh sách lệnh.',
+        allowedMentions: { parse: [], repliedUser: false },
+      });
+    }
 
     // ── !help command ──
     if (message.content === '!help' || message.content === '!help ') {
