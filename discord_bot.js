@@ -416,9 +416,13 @@ client.on(Events.MessageCreate, async (message) => {
     // ── Out of Scope: Câu hỏi nằm ngoài khả năng ──
     if (intent === 'OUT_OF_SCOPE') {
       return message.reply({
-        content: '⚠️ Câu hỏi này nằm ngoài phạm vi kiến thức của tôi.\n\n' +
-          'Tôi chuyên về: **lập trình, thuật toán, system design, DevOps, ML/AI**.\n' +
-          'Hãy thử hỏi về các chủ đề kỹ thuật, hoặc dùng `!help` để xem danh sách lệnh.',
+        content: '🤔 Câu hỏi này có thể nằm ngoài phạm vi chuyên môn của tôi.\n\n' +
+          'Tôi chuyên về: **lập trình, thuật toán, system design, DevOps, ML/AI**.\n\n' +
+          'Bạn có thể thử:\n' +
+          '• Hỏi về các chủ đề kỹ thuật\n' +
+          '• Dùng `!ask` để tôi tìm kiếm trên web\n' +
+          '• Dùng `!help` để xem danh sách lệnh\n' +
+          '• Dùng `!path <topic>` để xem lộ trình học',
         allowedMentions: { parse: [], repliedUser: false },
       });
     }
