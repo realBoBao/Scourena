@@ -1,4 +1,4 @@
-# 🧠 My AI Brain — Multi-Agent AI System
+# My AI Brain — Multi-Agent AI System
 
 > Hệ thống AI đa tác nhân tự học, tự tiến hóa, tự bảo mật.
 > **335 tests PASS (100%) | 22 test suites | PM2 Production Ready**
@@ -7,9 +7,9 @@
 
 ---
 
-## ✨ Tính năng chính
+## Tính năng chính
 
-### 🤖 22 AI Agents
+### 22 AI Agents
 | Agent | Vai trò |
 |---|---|
 | **RagAgent** | RAG-powered Q&A (Vector + BM25 + HyDE + Query Expansion + Confidence Scoring) |
@@ -35,7 +35,7 @@
 | **AgentWorker** | BullMQ job processor (cluster mode) |
 | **PlannerWorker** | OODA task dispatcher |
 
-### 🔍 RAG Pipeline (7 tầng)
+### RAG Pipeline (7 tầng)
 ```
 Query → Semantic Cache → Hybrid Search (Vector + BM25) → Knowledge Graph Context
                                                                     ↓
@@ -52,21 +52,21 @@ Answer ← Confidence Scoring ← Self-Reflect Gate ← LLM Synthesis ← HyDE +
 | **Knowledge Graph** | SQLite BFS traversal | Bổ sung mối quan hệ giữa các khái niệm |
 | **Confidence Scoring** | 4-signal aggregation | Retrieval + Consensus + Source + Self-Check |
 
-### 📚 Học tập
+### Học tập
 - **Spaced Repetition** (FSRS thay SM-2) — thuật toán tối ưu interval ôn tập
 - **Socratic Mode** — hỏi ngược, hint system, không đáp án trực tiếp
 - **Shadow Review** — ôn code cũ với MentorAgent
 - **Learning Path** — DAG từ Knowledge Graph + Topological Sort + Flashcard stats
 - **Confidence Scoring** — 4 tín hiệu đánh giá chất lượng câu trả lời
 
-### 🔒 Bảo mật
+### Bảo mật
 - **4-layer sandbox** (Commands, Imports, Patterns, Exfiltration)
 - **Trust Levels** (UNTRUSTED → PRIVILEGED)
 - **Rate limiting** (per-agent, per-IP)
 - **Audit logging** (mọi API call được log)
 - **Atomic file writes** (chống corrupt khi crash)
 
-### 📊 Monitoring
+### Monitoring
 - **Prometheus Metrics** (confidence scores, query latency, cache hit rate)
 - **F1 Score Dashboard** (`!f1stats`)
 - **👍/👎 Feedback** (per-response)
@@ -75,7 +75,7 @@ Answer ← Confidence Scoring ← Self-Reflect Gate ← LLM Synthesis ← HyDE +
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ```bash
 # 1. Clone
@@ -101,7 +101,7 @@ node rest_api_server.js  # REST API (port 3005)
 node scheduler.js        # Cron jobs
 ```
 
-### 🔑 API Keys
+### API Keys
 
 | Key | Bắt buộc | Mô tả |
 |---|---|---|
@@ -113,7 +113,7 @@ node scheduler.js        # Cron jobs
 | `GITHUB_TOKEN` | ⚠️ | GitHub search |
 | `REST_API_KEY` | ⚠️ | REST API authentication |
 
-### 📁 Cấu trúc thư mục
+### Cấu trúc thư mục
 
 ```
 ├── agents/              # 22 AI agents
@@ -142,7 +142,7 @@ node scheduler.js        # Cron jobs
 
 ---
 
-## 📋 Discord Commands
+## Discord Commands
 
 ```
 !ask <câu hỏi>              → RAG-powered Q&A
@@ -187,7 +187,7 @@ POST /api/notes                     → Quick note (iOS Shortcuts)
 
 ---
 
-## 🏗️ Kiến trúc
+## Kiến trúc
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -247,7 +247,7 @@ POST /api/notes                     → Quick note (iOS Shortcuts)
 
 ---
 
-## 📊 Cron Jobs
+## Cron Jobs
 
 | Thời gian | Hành động |
 |---|---|
@@ -257,7 +257,7 @@ POST /api/notes                     → Quick note (iOS Shortcuts)
 
 ---
 
-## 🧪 Testing
+## Testing
 
 ```bash
 # Run all tests
@@ -277,7 +277,7 @@ node --experimental-vm-modules node_modules/jest/bin/jest.js tests/e2e_pipeline.
 
 ---
 
-## 📱 Mobile Companion (PWA)
+## Mobile Companion (PWA)
 
 ```
 GET /           → PWA (flashcards, Q&A, knowledge graph, stats)
@@ -292,6 +292,6 @@ Features:
 
 ---
 
-## 📝 License
+## License
 
 MIT

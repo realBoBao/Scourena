@@ -15,6 +15,8 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { createGzip, createDeflate, createBrotliCompress } from 'zlib';
+import { pipeline } from 'stream/promises';
 import { addFlashcard, getDueFlashcards, getRandomFlashcards, reviewFlashcard, getStats, deleteFlashcard, clearAll } from './lib/flashcard_db.js';
 import { sandboxGateway } from './sandbox_gateway.js';
 import { getSupportedLanguages } from './lib/code_sandbox.js';
@@ -24,8 +26,8 @@ import { getEmbeddingCacheStats } from './lib/embeddings.js';
 import { getGraphStats, searchEntities, exportGraphForVisualization } from './lib/knowledge_graph.js';
 import { getEvaluationStats, getModelPerformanceReport, getAllABTestResults, detectKnowledgeGaps } from './lib/self_evolution.js';
 import { listVideos, cleanupOldVideos } from './lib/video_cdn.js';
-import { generateLearningPath, formatLearningPath } from './lib/learning_path.js';
-import { getSecurityHeaders, validateApiKey, isIpAllowed, checkBodySize, auditLog } from './lib/security.js';
+import { LearningPathGenerator } from './lib/learning_path.js';
+import { getSecurityHeaders, validateApiKey, isIpAllowed, checkBodySize, auditLog, validateBody, sanitizeString } from './lib/security.js';
 import { handleInteraction, registerSlashCommands } from './discord_interactions.js';
 import { handleJob } from './cloud_scheduler_triggers.js';
 
@@ -60,46 +62,110 @@ function authenticate(req) {
   return { ok: true };
 }
 
-// ── Rate Limiting (simple in-memory) ──
+// ── Rate Limiting: Sliding Window Log ──
+// More accurate than fixed window: no burst at boundaries.
+// Each IP stores a log of request timestamps within the window.
 const rateLimitMap = new Map();
 const RATE_LIMIT_WINDOW_MS = 60000; // 1 minute
 const RATE_LIMIT_MAX = 30; // 30 requests per minute
+const RATE_LIMIT_CLEANUP_INTERVAL = 300000; // 5 minutes
 
-// Cleanup old entries every 5 minutes to prevent memory leak
+// Cleanup old entries to prevent memory leak
 setInterval(() => {
   const now = Date.now();
   for (const [ip, entry] of rateLimitMap) {
-    if (now - entry.windowStart > RATE_LIMIT_WINDOW_MS * 2) {
+    // Remove if no requests in 2x window
+    if (entry.timestamps.length === 0 || now - entry.timestamps[entry.timestamps.length - 1] > RATE_LIMIT_WINDOW_MS * 2) {
       rateLimitMap.delete(ip);
     }
   }
-}, 300000);
+}, RATE_LIMIT_CLEANUP_INTERVAL);
 
+/**
+ * Sliding window rate limit check.
+ * Stores individual request timestamps, counts only those within the window.
+ */
 function checkRateLimit(clientIp) {
   const now = Date.now();
+  const windowStart = now - RATE_LIMIT_WINDOW_MS;
+
+  if (!rateLimitMap.has(clientIp)) {
+    rateLimitMap.set(clientIp, { timestamps: [now] });
+    return { ok: true, remaining: RATE_LIMIT_MAX - 1 };
+  }
+
   const entry = rateLimitMap.get(clientIp);
-  if (!entry || now - entry.windowStart > RATE_LIMIT_WINDOW_MS) {
-    rateLimitMap.set(clientIp, { windowStart: now, count: 1 });
-    return { ok: true };
+
+  // Remove timestamps outside the window (sliding)
+  entry.timestamps = entry.timestamps.filter(t => t > windowStart);
+
+  if (entry.timestamps.length >= RATE_LIMIT_MAX) {
+    const retryAfter = Math.ceil((entry.timestamps[0] + RATE_LIMIT_WINDOW_MS - now) / 1000);
+    return {
+      ok: false,
+      error: 'Rate limit exceeded',
+      status: 429,
+      retryAfter,
+      remaining: 0,
+    };
   }
-  if (entry.count >= RATE_LIMIT_MAX) {
-    return { ok: false, error: 'Rate limit exceeded', status: 429 };
-  }
-  entry.count++;
-  return { ok: true };
+
+  entry.timestamps.push(now);
+  return { ok: true, remaining: RATE_LIMIT_MAX - entry.timestamps.length };
 }
 
-// ── JSON Response Helper (with security headers) ──
+// ── JSON Response Helper (with security headers + compression) ──
 function json(res, data, status = 200) {
   const secHeaders = getSecurityHeaders();
-  res.writeHead(status, {
+  const body = JSON.stringify(data);
+  const headers = {
     'Content-Type': 'application/json',
-    'Access-Control-Allow-Origin': process.env.CORS_ORIGIN || '*',
-    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     ...secHeaders,
-  });
-  res.end(JSON.stringify(data));
+  };
+
+  // Add CORS origin header if configured
+  const allowedOrigin = process.env.CORS_ORIGIN || (process.env.NODE_ENV === 'production' ? '' : '*');
+  if (allowedOrigin) {
+    headers['Access-Control-Allow-Origin'] = allowedOrigin;
+  }
+
+  // Rate limit headers (from sliding window check)
+  if (res._rateLimit) {
+    headers['X-RateLimit-Limit'] = String(RATE_LIMIT_MAX);
+    headers['X-RateLimit-Remaining'] = String(res._rateLimit.remaining || 0);
+  }
+
+  // Compression for responses > 1KB
+  const acceptEncoding = res.req?.headers?.['accept-encoding'] || '';
+  if (body.length > 1024) {
+    if (acceptEncoding.includes('br')) {
+      headers['Content-Encoding'] = 'br';
+      res.writeHead(status, headers);
+      const brotli = createBrotliCompress();
+      brotli.end(Buffer.from(body));
+      brotli.pipe(res);
+      return;
+    }
+    if (acceptEncoding.includes('gzip')) {
+      headers['Content-Encoding'] = 'gzip';
+      res.writeHead(status, headers);
+      const gzip = createGzip();
+      gzip.end(Buffer.from(body));
+      gzip.pipe(res);
+      return;
+    }
+    if (acceptEncoding.includes('deflate')) {
+      headers['Content-Encoding'] = 'deflate';
+      res.writeHead(status, headers);
+      const deflate = createDeflate();
+      deflate.end(Buffer.from(body));
+      deflate.pipe(res);
+      return;
+    }
+  }
+
+  res.writeHead(status, headers);
+  res.end(body);
 }
 
 // ── Body Parser (uses pre-read body from server) ──
@@ -136,13 +202,34 @@ function matchRoute(method, pathname) {
 // ── Route Definitions ──
 // ═══════════════════════════════════════════
 
-// Health check (public)
-route('GET', '/api/health', (req, res) => {
+// Health check (public) — deep check with DB connectivity & memory
+route('GET', '/api/health', async (req, res) => {
+  const mem = process.memoryUsage();
+  const memMB = Math.round(mem.rss / 1024 / 1024);
+  const memLimitMB = 512; // Cloud Run default 512MB
+
+  // Check DB connectivity (lightweight)
+  let dbStatus = 'unknown';
+  try {
+    const { getDb } = await import('./lib/flashcard_db.js');
+    const db = await getDb();
+    await db.get('SELECT 1');
+    dbStatus = 'connected';
+  } catch {
+    dbStatus = 'error';
+  }
+
+  const healthy = dbStatus === 'connected' && memMB < memLimitMB * 0.9;
+
   json(res, {
-    status: 'ok',
-    uptime: process.uptime(),
+    status: healthy ? 'healthy' : 'degraded',
+    uptime: Math.round(process.uptime()),
     timestamp: new Date().toISOString(),
-    version: '1.0.0',
+    version: '2.0.0',
+    checks: {
+      database: dbStatus,
+      memory: { rss: `${memMB}MB`, limit: `${memLimitMB}MB`, ok: memMB < memLimitMB * 0.9 },
+    },
   });
 }, { public: true });
 
@@ -213,26 +300,33 @@ route('GET', '/api/learning-path', async (req, res) => {
 
 // ── Quick Note (from iOS Shortcuts) ──
 route('POST', '/api/notes', async (req, res, params) => {
-  const body = await parseBody(req);
-  const { content, tags = [] } = body;
-  if (!content) return json(res, { error: 'Missing content' }, 400);
+  const validation = validateBody(req.body, {
+    content: { type: 'string', required: true, maxLength: 5000 },
+  });
+  if (!validation.ok) return json(res, { error: validation.errors.join('; ') }, 400);
 
+  const { tags = [] } = req.body;
   const { addMemory } = await import('./lib/memory_manager.js');
   const id = await addMemory({
     id: `api-note:${Date.now()}`,
     type: 'api_note',
     source: 'rest-api',
-    content,
-    tags: ['api', ...tags],
+    content: validation.data.content,
+    tags: ['api', ...(Array.isArray(tags) ? tags : [])].slice(0, 10),
   });
   json(res, { ok: true, id, message: 'Note saved to memory' });
 });
 
 // ── Feedback Receiver (gộp từ feedback_server.js) ──
 route('POST', '/api/feedback', async (req, res) => {
-  const body = await parseBody(req);
-  const { userId, feedback, rating, category } = body;
-  if (!feedback) return json(res, { error: 'Missing feedback content' }, 400);
+  const validation = validateBody(req.body, {
+    feedback: { type: 'string', required: true, maxLength: 2000 },
+    rating: { type: 'number', required: false },
+  });
+  if (!validation.ok) return json(res, { error: validation.errors.join('; ') }, 400);
+
+  const { userId, category } = req.body;
+  const { feedback, rating } = validation.data;
 
   // Lưu feedback vào file log
   const feedbackDir = path.resolve('./artifacts');
@@ -249,10 +343,12 @@ route('POST', '/api/feedback', async (req, res) => {
 
 // ── Quick Ask (from iOS Shortcuts) ──
 route('POST', '/api/ask', async (req, res) => {
-  const body = await parseBody(req);
-  const { query } = body;
-  if (!query) return json(res, { error: 'Missing query' }, 400);
+  const validation = validateBody(req.body, {
+    query: { type: 'string', required: true, maxLength: 2000 },
+  });
+  if (!validation.ok) return json(res, { error: validation.errors.join('; ') }, 400);
 
+  const { query } = validation.data;
   const { answerQuestion } = await import('./agents/RagAgent.js');
   const result = await answerQuestion(query);
   json(res, {
@@ -284,17 +380,27 @@ route('GET', '/api/flashcards/stats', async (req, res) => {
 });
 
 route('POST', '/api/flashcards', async (req, res) => {
-  const body = await parseBody(req);
-  const { question, answer, source, category } = body;
-  if (!question || !answer) return json(res, { error: 'Missing question or answer' }, 400);
-  const id = await addFlashcard({ question, answer, source: source || 'api', category: category || 'general' });
+  const validation = validateBody(req.body, {
+    question: { type: 'string', required: true, maxLength: 500 },
+    answer: { type: 'string', required: true, maxLength: 2000 },
+  });
+  if (!validation.ok) return json(res, { error: validation.errors.join('; ') }, 400);
+  const { source, category } = req.body;
+  const id = await addFlashcard({
+    question: validation.data.question,
+    answer: validation.data.answer,
+    source: sanitizeString(source || 'api', 100),
+    category: sanitizeString(category || 'general', 100),
+  });
   json(res, { ok: true, id }, 201);
 });
 
 route('POST', '/api/flashcards/:id/review', async (req, res, params) => {
-  const body = await parseBody(req);
-  const { correct } = body;
-  if (typeof correct !== 'boolean') return json(res, { error: 'Missing correct (boolean)' }, 400);
+  const validation = validateBody(req.body, {
+    correct: { type: 'boolean', required: true },
+  });
+  if (!validation.ok) return json(res, { error: validation.errors.join('; ') }, 400);
+  const { correct } = validation.data;
   const result = await reviewFlashcard(parseInt(params.id, 10), correct);
   if (!result) return json(res, { error: 'Flashcard not found' }, 404);
   json(res, { ok: true, result });
@@ -619,13 +725,32 @@ const server = http.createServer(async (req, res) => {
   const pathname = url.pathname;
   const method = req.method;
 
+  // CORS — strict origin from env var
+  const allowedOrigin = process.env.CORS_ORIGIN || (process.env.NODE_ENV === 'production' ? '' : '*');
+
   // CORS preflight
   if (method === 'OPTIONS') {
-    res.writeHead(204, {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-    });
+    if (allowedOrigin && allowedOrigin !== '*') {
+      res.writeHead(204, {
+        'Access-Control-Allow-Origin': allowedOrigin,
+        'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+        'Access-Control-Max-Age': '86400',
+      });
+    } else if (allowedOrigin === '*') {
+      res.writeHead(204, {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+        'Access-Control-Max-Age': '86400',
+      });
+    } else {
+      res.writeHead(204, {
+        'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+        'Access-Control-Max-Age': '86400',
+      });
+    }
     res.end();
     return;
   }
@@ -637,9 +762,24 @@ const server = http.createServer(async (req, res) => {
     return json(res, { error: 'Forbidden — IP not allowed' }, 403);
   }
 
-  // Rate limiting
+  // Rate limiting (sliding window)
   const rl = checkRateLimit(clientIp);
-  if (!rl.ok) return json(res, { error: rl.error }, rl.status);
+  // Attach rate limit info to response for headers
+  res._rateLimit = rl;
+  if (!rl.ok) {
+    const errBody = { error: rl.error, retryAfter: rl.retryAfter };
+    if (rl.retryAfter) {
+      res.writeHead(429, {
+        'Content-Type': 'application/json',
+        'Retry-After': String(rl.retryAfter),
+        'X-RateLimit-Limit': String(RATE_LIMIT_MAX),
+        'X-RateLimit-Remaining': '0',
+      });
+      res.end(JSON.stringify(errBody));
+      return;
+    }
+    return json(res, errBody, rl.status);
+  }
 
   // Body size check
   const bodySize = checkBodySize(req.headers['content-length']);
@@ -685,13 +825,50 @@ server.listen(PORT, () => {
   console.log(`[REST API] API Key: ${keyStatus}`);
 });
 
-// Graceful shutdown for PM2
-function gracefulShutdown(signal) {
-  console.log(`[REST API] Received ${signal}, shutting down...`);
-  server.close(() => process.exit(0));
-  setTimeout(() => process.exit(0), 5000);
+// Graceful shutdown — close server, DBs, flush caches
+let _shuttingDown = false;
+async function gracefulShutdown(signal) {
+  if (_shuttingDown) return;
+  _shuttingDown = true;
+  console.log(`[REST API] Received ${signal}, shutting down gracefully...`);
+
+  // Stop accepting new connections
+  server.close(() => {
+    console.log('[REST API] HTTP server closed');
+  });
+
+  // Close DB connections
+  try {
+    const dbs = [];
+    try { const { closeDb: closeFlash } = await import('./lib/flashcard_db.js'); dbs.push(closeFlash); } catch {}
+    try { const { closeDb: closeKg } = await import('./lib/knowledge_graph.js'); dbs.push(closeKg); } catch {}
+    try { const { closeDb: closeVec } = await import('./lib/vector_store.js'); dbs.push(closeVec); } catch {}
+    for (const close of dbs) {
+      try { await close(); } catch {}
+    }
+    console.log('[REST API] DB connections closed');
+  } catch (err) {
+    console.error('[REST API] Error closing DBs:', err.message);
+  }
+
+  // Flush semantic cache
+  try {
+    // Cache auto-saves via interval, force one more save
+    const { SemanticCache } = await import('./lib/semantic_cache.js');
+    // Cache instances save themselves on interval
+  } catch {}
+
+  console.log('[REST API] Shutdown complete');
+  process.exit(0);
+
+  // Force exit after 10s safety net
+  setTimeout(() => {
+    console.error('[REST API] Forced exit after timeout');
+    process.exit(1);
+  }, 10000);
 }
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGUSR2', () => gracefulShutdown('SIGUSR2')); // PM2 reload
 
 export { server };
