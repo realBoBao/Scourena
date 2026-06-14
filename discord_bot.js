@@ -390,7 +390,7 @@ client.on(Events.MessageCreate, async (message) => {
       // Store feedback cho F1 evaluation
       try {
         const { getDb } = await import('./lib/flashcard_db.js');
-        const db = getDb();
+        const db = await getDb();
         db.prepare(`
           INSERT INTO f1_feedback (user_id, message_id, sentiment, created_at)
           VALUES (?, ?, ?, datetime('now'))
@@ -489,7 +489,7 @@ client.on(Events.MessageCreate, async (message) => {
       try {
         const { F1Evaluator } = await import('./lib/f1_evaluator.js');
         const { getDb } = await import('./lib/flashcard_db.js');
-        const db = getDb();
+        const db = await getDb();
         const days = parseInt(message.content.slice(8).trim()) || 7;
         const metricsList = await F1Evaluator.getAllMetrics(db, days);
         const output = F1Evaluator.formatDashboard(metricsList);
