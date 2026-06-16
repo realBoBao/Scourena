@@ -78,6 +78,42 @@ function rememberInterestTopic(topic) {
   return `interest:${id}`;
 }
 
+// ── Implicit Feedback: Track outbound links/content ──
+// Fire-and-forget tracking — never blocks the main flow
+const _outboundTracker = {
+  _pending: new Map(), // userId → { linkId, sentAt, category }
+
+  /**
+   * Track a URL or content piece sent to user.
+   * @param {string} userId
+   * @param {string} url
+   * @param {string} category — 'video' | 'repo' | 'article' | 'book' | 'evo' | ...
+   * @param {string} messageId — Discord message ID
+   */
+  track(userId, url, category = 'unknown', messageId = null) {
+    try {
+      import('./lib/implicit_feedback.js').then(({ implicitFeedback }) => {
+        const linkId = implicitFeedback.trackOutbound(userId, { url, category, messageId });
+        this._pending.set(userId, { linkId, sentAt: Date.now(), category });
+      }).catch(() => {});
+    } catch { /* non-critical */ }
+  },
+
+  /**
+   * Get the pending outbound for a user (for dwell time calculation).
+   */
+  getPending(userId) {
+    return this._pending.get(userId) || null;
+  },
+
+  /**
+   * Clear pending after dwell time is recorded.
+   */
+  clearPending(userId) {
+    this._pending.delete(userId);
+  },
+};
+
 function resolveInterestTopic(customId) {
   const raw = customId.slice('interest:'.length);
   const storedTopic = interestTopics.get(raw);
@@ -976,6 +1012,14 @@ client.on(Events.MessageCreate, async (message) => {
           content: truncateForDiscord(output),
           allowedMentions: { parse: [] },
         });
+
+        // Track outbound URL for implicit feedback
+        _outboundTracker.track(
+          message.author.id,
+          url,
+          result.type || 'article',
+          waitingMsg.id
+        );
       } catch (err) {
         await waitingMsg.edit({
           content: `❌ AnalysisAgent lỗi: ${err?.message || err}`,

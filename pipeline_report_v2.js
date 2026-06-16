@@ -111,28 +111,19 @@ async function fetchRepoReadmeAndAnalyze(owner, repo, stars){
 
   const { analyzeText } = await import('./lib/repo_analyzer.js');
   const analysis = await analyzeText(readmeContent, 'readme', { owner, repo });
-  return { summary: analysis?.summary?.join('\n') || '', category: analysis?.category || 'Backend' };
-  const summaryPath = path.join(base, 'summary.txt');
-  let summary = '';
-  let category = 'Backend';
-  try{ summary = await fs.readFile(summaryPath,'utf8'); }catch(e){/*ignore*/}
-  try{
-    const analysisJson = await fs.readFile(path.join(base, 'analysis.json'), 'utf8');
-    const parsed = JSON.parse(analysisJson);
-    if(['Backend', 'AI', 'DevOps', 'Math', 'Algorithms'].includes(parsed.category)) category = parsed.category;
-  }catch(e){/*ignore*/}
+  const summary = analysis?.summary?.join('\n') || '';
+  const category = analysis?.category || 'Backend';
 
   // Chunk, embed, and upsert into vector DB (Qdrant Academic Space)
   try{
-    const text = await fs.readFile(readmeFile,'utf8');
-    const chunks = chunkText(text, 1000, 100);
+    const chunks = chunkText(readmeContent, 1000, 100);
     const embeddings = await embedChunksSafe(chunks);
     const docId = `repo:${owner}/${repo}`;
     // Bổ sung metadata 'space: academic' cho 3-Space Vector DB
     await upsertDocument(docId, { url: `https://github.com/${owner}/${repo}`, project: repo, category, space: 'academic' }, chunks, embeddings);
   }catch(e){ console.error('Vector upsert failed for repo', owner+'/'+repo, e.message||e); }
 
-  return { readmePath: readmeFile, summaryPath, summary, category };
+  return { summary, category };
 }
 
 async function fetchYouTubeVideoStats(videoIds, apiKey){
@@ -338,25 +329,19 @@ async function analyzeWebItemAndUpsert(itemKey, metadata, text, category = 'Back
   const sourcePath = path.join(baseDir, 'source.txt');
   await fs.writeFile(sourcePath, text, 'utf8');
   const analysisMetadata = `${metadata.source || metadata.url || ''}`;
+  let summary = '';
+  let categoryGuess = category;
   try{
-    // Dùng analyzeText trực tiếp thay vì spawn child process
     const { analyzeText } = await import('./lib/repo_analyzer.js');
     const analysis = await analyzeText(text, metadata.type || 'web', { source: itemKey });
-    // Lưu summary vào file để backward compat
-    if (analysis?.summary) {
-      await fs.writeFile(path.join(baseDir, 'summary.txt'), analysis.summary.join('\n'), 'utf8');
+    if (analysis?.summary?.length) {
+      summary = analysis.summary.join('\n');
+      await fs.writeFile(path.join(baseDir, 'summary.txt'), summary, 'utf8');
     }
+    if (['Backend','AI','DevOps','Math','Algorithms'].includes(analysis?.category)) categoryGuess = analysis.category;
   }catch(e){
     console.warn('Web item analysis failed for', itemKey, e.message||e);
   }
-  let summary = '';
-  let categoryGuess = category;
-  try{ summary = await fs.readFile(path.join(baseDir, 'summary.txt'),'utf8'); }catch(_){ }
-  try{
-    const analysisJson = await fs.readFile(path.join(baseDir, 'analysis.json'), 'utf8');
-    const parsed = JSON.parse(analysisJson);
-    if(['Backend','AI','DevOps','Math','Algorithms'].includes(parsed.category)) categoryGuess = parsed.category;
-  }catch(_){ }
   const chunks = chunkText(text, 1000, 100);
   const embeddings = await embedChunksSafe(chunks);
   const docId = `${metadata.type || 'web'}:${itemKey}`;
@@ -499,10 +484,11 @@ async function fetchVideoAndAnalyze(video){
     const { analyzeText } = await import('./lib/repo_analyzer.js');
     const webContent = await fs.readFile(descPath, 'utf8').catch(() => '');
     const analysis = await analyzeText(webContent, 'web', { source: metadata });
-    summary = await fs.readFile(path.resolve('./artifacts', `video-${videoId}`, 'summary.txt'),'utf8');
-    const analysisJson = await fs.readFile(path.resolve('./artifacts', `video-${videoId}`, 'analysis.json'),'utf8');
-    const parsed = JSON.parse(analysisJson);
-    if(['Backend', 'AI', 'DevOps', 'Math', 'Algorithms'].includes(parsed.category)) category = parsed.category;
+    if (analysis?.summary) {
+      summary = analysis.summary.join('\n');
+      await fs.writeFile(path.resolve('./artifacts', `video-${videoId}`, 'summary.txt'), summary, 'utf8');
+    }
+    if (['Backend', 'AI', 'DevOps', 'Math', 'Algorithms'].includes(analysis?.category)) category = analysis.category;
   }catch(e){/*ignore*/}
 
   const vidId = `video::${videoId}`;
@@ -551,80 +537,81 @@ async function run(topic = null, isForce = false){
     return retry(
       () => hedge(
         async (signal) => {
-          const tavilyKey = process.env.TAVILY_API_KEY;
-          if (!tavilyKey) {
-            console.log('[search] Facebook/Tavily: No TAVILY_API_KEY, skipping');
+          try {
+            const tavilyKey = process.env.TAVILY_API_KEY;
+            if (!tavilyKey) {
+              console.log('[search] Facebook/Tavily: No TAVILY_API_KEY, skipping');
+              return [];
+            }
+            const { tavily } = await import('@tavily/core');
+            const client = tavily({ apiKey: tavilyKey });
+
+            // Search với query bao gồm "facebook" để tìm posts từ Facebook
+            const socialQuery = `${topic} (facebook OR twitter OR linkedin OR reddit)`;
+            const result = await client.search(socialQuery, {
+              maxResults: maxResults * 3, // Lấy nhiều hơn để filter
+              includeAnswer: false,
+              searchDepth: 'basic',
+            });
+
+            const items = (result?.results || [])
+              .filter(r => {
+                const url = (r.url || '').toLowerCase();
+                // Chấp nhiều nguồn social/media
+                return url.includes('facebook.com') || url.includes('fb.com') ||
+                       url.includes('twitter.com') || url.includes('x.com') ||
+                       url.includes('linkedin.com') || url.includes('reddit.com') ||
+                       url.includes('medium.com') || url.includes('dev.to') ||
+                       url.includes('hashnode.dev');
+              })
+              .slice(0, maxResults)
+              .map(r => {
+                const url = (r.url || '').toLowerCase();
+                let source = 'web';
+                if (url.includes('facebook.com') || url.includes('fb.com')) source = 'facebook';
+                else if (url.includes('twitter.com') || url.includes('x.com')) source = 'twitter';
+                else if (url.includes('linkedin.com')) source = 'linkedin';
+                else if (url.includes('reddit.com')) source = 'reddit';
+                else if (url.includes('medium.com')) source = 'medium';
+
+                return {
+                  id: r.url,
+                  title: r.title || 'Social Post',
+                  url: r.url,
+                  snippet: r.content?.slice(0, 300) || '',
+                  score: 0.6, // Social posts = medium-high score
+                  source,
+                };
+              });
+
+            if (items.length === 0) {
+              // Fallback: lấy general web results nếu không tìm được social
+              const fallback = await client.search(topic, {
+                maxResults: maxResults,
+                includeAnswer: false,
+                searchDepth: 'basic',
+              });
+              return (fallback?.results || []).slice(0, maxResults).map(r => ({
+                id: r.url,
+                title: r.title || 'Web Post',
+                url: r.url,
+                snippet: r.content?.slice(0, 300) || '',
+                score: 0.4,
+                source: 'web',
+              }));
+            }
+
+            return items;
+          } catch (err) {
+            console.warn('[search] Facebook/Tavily search failed:', err?.message || err);
             return [];
           }
-          const { tavily } = await import('@tavily/core');
-          const client = tavily({ apiKey: tavilyKey });
-
-          // Search với query bao gồm "facebook" để tìm posts từ Facebook
-          const socialQuery = `${topic} (facebook OR twitter OR linkedin OR reddit)`;
-          const result = await client.search(socialQuery, {
-        maxResults: maxResults * 3, // Lấy nhiều hơn để filter
-        includeAnswer: false,
-        searchDepth: 'basic',
-      });
-      
-      const items = (result?.results || [])
-        .filter(r => {
-          const url = (r.url || '').toLowerCase();
-          // Chấp nhiều nguồn social/media
-          return url.includes('facebook.com') || url.includes('fb.com') ||
-                 url.includes('twitter.com') || url.includes('x.com') ||
-                 url.includes('linkedin.com') || url.includes('reddit.com') ||
-                 url.includes('medium.com') || url.includes('dev.to') ||
-                 url.includes('hashnode.dev');
-        })
-        .slice(0, maxResults)
-        .map(r => {
-          const url = (r.url || '').toLowerCase();
-          let source = 'web';
-          if (url.includes('facebook.com') || url.includes('fb.com')) source = 'facebook';
-          else if (url.includes('twitter.com') || url.includes('x.com')) source = 'twitter';
-          else if (url.includes('linkedin.com')) source = 'linkedin';
-          else if (url.includes('reddit.com')) source = 'reddit';
-          else if (url.includes('medium.com')) source = 'medium';
-          
-          return {
-            id: r.url,
-            title: r.title || 'Social Post',
-            url: r.url,
-            snippet: r.content?.slice(0, 300) || '',
-            score: 0.6, // Social posts = medium-high score
-            source,
-          };
-        });
-      
-      if (items.length === 0) {
-        // Fallback: lấy general web results nếu không tìm được social
-        const fallback = await client.search(topic, {
-          maxResults: maxResults,
-          includeAnswer: false,
-          searchDepth: 'basic',
-        });
-        return (fallback?.results || []).slice(0, maxResults).map(r => ({
-          id: r.url,
-          title: r.title || 'Web Post',
-          url: r.url,
-          snippet: r.content?.slice(0, 300) || '',
-          score: 0.4,
-          source: 'web',
-        }));
-      }
-      
-          return items;
-        } catch (err) {
-          console.warn('[search] Facebook/Tavily search failed:', err?.message || err);
-          return [];
-        }
-      },
-      { hedgeDelay: 1500, timeout: 8000 }
-    ),
-    { maxRetries: 2, baseDelay: 1000 }
-  );
-}
+        },
+        { hedgeDelay: 1500, timeout: 8000 }
+      ),
+      { maxRetries: 2, baseDelay: 1000 }
+    );
+  }
 
   // // ── Google Custom Search (broad web search, up to 10 results per query) ──
   // async function googleSearch(topic, maxResults = 10) {

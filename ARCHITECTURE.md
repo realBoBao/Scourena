@@ -66,7 +66,7 @@
 | **PdfAgent** | Xử lý PDF, flashcard generation | `priority` | `processPdf` |
 | **DebateAgent** | Multi-agent debate + Planner intervention | `priority` | `runDebate` |
 | **FlashcardAgent** | Tạo flashcard từ text | `priority` | `generateFlashcards` |
-| **EvoAgent** | Tự tiến hóa, health monitoring | `evolution` | `autoEvaluate` |
+| **EvoAgent** | Tự tiến hóa, health monitoring + behavioral evolution | `evolution` | `runDailyEvolution` |
 | **GraphAgent** | Knowledge graph, entity extraction | `graph` | `extractEntities` |
 
 ---
@@ -250,6 +250,10 @@ Tabs:
 | Videos | Rendered animations | Local/S3 |
 | Metrics | System monitoring | Prometheus |
 | Config | Agent weights, feedback | JSON files |
+| User Profiles | Learning profile, preferences, topic stats | SQLite |
+| Implicit Feedback | CTR, dwell time, category affinity | SQLite |
+| Mood States | Emotional state history, transitions | SQLite |
+| Memory Decay | Ebbinghaus decay log, freshness scores | SQLite |
 
 ---
 
@@ -258,16 +262,25 @@ Tabs:
 ```
 User Input (Discord/REST/PWA)
   │
-  ▼
-InteractionAgent → createSession() → Redis
-  │
-  ▼
-PlannerWorker → init_session job → PlannerAgent.startSession()
-  │
-  ├─ OBSERVE: read session state
-  ├─ ORIENT:  LLM analyze progress
-  ├─ DECIDE:  choose next agent
-  └─ ACT:     dispatch BullMQ job
+  ├─► MoodState      → analyze tone + time → emotional state
+  ├─► ImplicitFeedback → track dwell time, CTR, category affinity
+  └─► InteractionAgent → createSession() → Redis
+       │
+       ▼
+  PlannerWorker → init_session job → PlannerAgent.startSession()
+       │
+       ├─ OBSERVE: read session state + mood + implicit signals
+       ├─ ORIENT:  LLM analyze progress + behavioral context
+       ├─ DECIDE:  choose next agent (mood-aware)
+       └─ ACT:     dispatch BullMQ job
+
+  ── Background (Cron) ──
+  4:00 AM  EvoAgent.runDailyEvolution()
+           ├─ System health check
+           ├─ Knowledge gap detection
+           └─ Behavioral analysis (implicit + mood + decay)
+  4:30 AM  MemoryDecay.runDailyDecay()
+           └─ Ebbinghaus forgetting curve on preferences
        │
        ▼
   AgentWorker → load agent → execute → save result

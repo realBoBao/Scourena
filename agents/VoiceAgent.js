@@ -16,6 +16,7 @@ import { readFile, writeFile, mkdir, rm, access } from 'fs/promises';
 import path from 'path';
 import os from 'os';
 import { preprocessAudio } from '../lib/media_preprocessor.js';
+import { setStudyState, isStudying, processVoice } from '../lib/vad_state.js';
 
 const WHISPER_MODEL = process.env.WHISPER_MODEL || path.join(process.cwd(), 'models', 'ggml-base.bin');
 const WHISPER_BIN = process.env.WHISPER_BIN || path.join(process.cwd(), 'whisper.cpp', 'build', 'bin', 'Release', 'whisper-cli.exe');
@@ -152,9 +153,43 @@ export async function processVoiceMessage(message) {
       const buffer = await res.arrayBuffer();
 
       const result = await transcribeAudio(Buffer.from(buffer), { language: 'vi' });
+
+      // ── Tier 1: VAD + Study State Check ──
+      const transcript = result.text || '';
+      const vadResult = processVoice(message.author.id, Buffer.from(buffer), transcript);
+
+      if (!vadResult.shouldProcess) {
+        logger.debug(`[VoiceAgent] VAD skip: ${vadResult.reason} for user ${message.author.id}`);
+        results.push({
+          fileName: attachment.name,
+          success: true,
+          skipped: true,
+          skipReason: vadResult.reason,
+          transcript,
+        });
+        continue;
+      }
+
+      // Kiểm tra study mode commands
+      const lowerTranscript = transcript.toLowerCase();
+      if (lowerTranscript.includes('bắt đầu học') || lowerTranscript.includes('đi học') || lowerTranscript.includes('study mode')) {
+        setStudyState(message.author.id, true);
+        await message.reply('📚 Chế độ học đã bật! Tôi sẽ im lặng và chỉ lên tiếng khi bạn gọi "Serena".');
+        results.push({ fileName: attachment.name, success: true, action: 'study_mode_on', transcript });
+        continue;
+      }
+
+      if (lowerTranscript.includes('học xong') || lowerTranscript.includes('nghỉ học') || lowerTranscript.includes('stop studying')) {
+        setStudyState(message.author.id, false);
+        await message.reply('🎉 Chế độ học đã tắt! Tôi có thể trò chuyện bình thường rồi.');
+        results.push({ fileName: attachment.name, success: true, action: 'study_mode_off', transcript });
+        continue;
+      }
+
       results.push({
         fileName: attachment.name,
         ...result,
+        vadPassed: true,
       });
     } catch (err) {
       results.push({
