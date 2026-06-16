@@ -10,6 +10,8 @@ import { chunkText } from './lib/chunking.js';
 import { embedText, embedTextsBatch } from './lib/embeddings.js';
 import { upsertDocument } from './lib/vector_store.js';
 import { fetchWithRetry } from './lib/fetch_retry.js';
+import { retry } from './lib/backoff.js';
+import { hedge } from './lib/request_hedging.js';
 
 // ── Deduplication helper ──
 // Loại bỏ duplicate sources dựa trên URL (cùng URL từ nhiều sources chỉ giữ 1)
@@ -68,12 +70,23 @@ const DEV_TOPICS = [
 
 
 async function githubSearch(topic, perPage = GITHUB_PER_PAGE, minStars = GITHUB_MIN_STARS, createdAfter = GITHUB_CREATED_AFTER){
-  const q = `${topic} stars:>=${minStars} created:>=${createdAfter}`;
-  const url = `${GITHUB_SEARCH_URL}?q=${encodeURIComponent(q)}&sort=stars&order=desc&per_page=${perPage}`;
-  const res = await fetchWithRetry(url, { headers: process.env.GITHUB_TOKEN ? { Authorization: `token ${process.env.GITHUB_TOKEN}` } : {} });
-  if(!res.ok) throw new Error(`GitHub search ${res.status}`);
-  const j = await res.json();
-  return j.items || [];
+  return retry(
+    () => hedge(
+      async (signal) => {
+        const q = `${topic} stars:>=${minStars} created:>=${createdAfter}`;
+        const url = `${GITHUB_SEARCH_URL}?q=${encodeURIComponent(q)}&sort=stars&order=desc&per_page=${perPage}`;
+        const res = await fetchWithRetry(url, {
+          headers: process.env.GITHUB_TOKEN ? { Authorization: `token ${process.env.GITHUB_TOKEN}` } : {},
+          signal,
+        });
+        if (!res.ok) throw new Error(`GitHub search ${res.status}`);
+        const j = await res.json();
+        return j.items || [];
+      },
+      { hedgeDelay: 1500, timeout: 8000 }
+    ),
+    { maxRetries: 2, baseDelay: 1000 }
+  );
 }
 
 async function fetchRepoReadmeAndAnalyze(owner, repo, stars){
@@ -188,36 +201,39 @@ async function preCheckRelevance(title, description){
 }
 
 async function youtubeSearchVideos(topic, maxResults = YOUTUBE_MAX_RESULTS, minViews = YOUTUBE_MIN_VIEWS){
-  const apiKey = process.env.YOUTUBE_API_KEY;
-  const params = new URLSearchParams({
-    part: 'snippet',
-    q: topic,
-    type: 'video',
-    order: YOUTUBE_ORDER,
-    publishedAfter: '2026-01-01T00:00:00Z',
-    maxResults: String(Math.min(maxResults * 2, 50)),
-  });
-  if(apiKey) params.set('key', apiKey);
-  const res = await fetchWithRetry(`${YOUTUBE_SEARCH_URL}?${params.toString()}`);
-  if(!res.ok) throw new Error(`Youtube ${res.status}`);
-  const j = await res.json();
-  const videos = (j.items || []).map((item) => ({
-    videoId: item.id.videoId,
-    title: item.snippet.title,
-    description: item.snippet.description,
-    publishedAt: item.snippet.publishedAt,
-    channelTitle: item.snippet.channelTitle,
-    thumbnail: item.snippet.thumbnails?.default?.url || null,
-  })).filter((video) => {
-    if(!video.videoId) return false;
-    const lower = `${video.title || ''} ${video.description || ''}`.toLowerCase();
-    const isShorts = /#shorts|\bshorts\b/.test(lower);
-    const isIndonesiaApi = /\b(kereta api|kembang api)\b/.test(lower);
-    return !isShorts && !isIndonesiaApi;
-  });
+  return retry(
+    () => hedge(
+      async (signal) => {
+        const apiKey = process.env.YOUTUBE_API_KEY;
+        const params = new URLSearchParams({
+          part: 'snippet',
+          q: topic,
+          type: 'video',
+          order: YOUTUBE_ORDER,
+          publishedAfter: '2026-01-01T00:00:00Z',
+          maxResults: String(Math.min(maxResults * 2, 50)),
+        });
+        if (apiKey) params.set('key', apiKey);
+        const res = await fetchWithRetry(`${YOUTUBE_SEARCH_URL}?${params.toString()}`, { signal });
+        if (!res.ok) throw new Error(`Youtube ${res.status}`);
+        const j = await res.json();
+        const videos = (j.items || []).map((item) => ({
+          videoId: item.id.videoId,
+          title: item.snippet.title,
+          description: item.snippet.description,
+          publishedAt: item.snippet.publishedAt,
+          channelTitle: item.snippet.channelTitle,
+          thumbnail: item.snippet.thumbnails?.default?.url || null,
+        })).filter((video) => {
+          if (!video.videoId) return false;
+          const lower = `${video.title || ''} ${video.description || ''}`.toLowerCase();
+          const isShorts = /#shorts|\bshorts\b/.test(lower);
+          const isIndonesiaApi = /\b(kereta api|kembang api)\b/.test(lower);
+          return !isShorts && !isIndonesiaApi;
+        });
 
-  const ids = videos.map((video) => video.videoId).join(',');
-  const stats = await fetchYouTubeVideoStats(ids, apiKey);
+        const ids = videos.map((video) => video.videoId).join(',');
+        const stats = await fetchYouTubeVideoStats(ids, apiKey);
 
   const enriched = videos.map((video) => ({
     ...video,
@@ -227,6 +243,11 @@ async function youtubeSearchVideos(topic, maxResults = YOUTUBE_MAX_RESULTS, minV
     .slice(0, maxResults);
 
   return enriched;
+      },
+      { hedgeDelay: 1500, timeout: 8000 }
+    ),
+    { maxRetries: 2, baseDelay: 1000 }
+  );
 }
 
 async function redditSearch(topic, maxResults = 5){

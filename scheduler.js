@@ -1,4 +1,4 @@
-﻿import { spawn } from 'child_process';
+import { spawn } from 'child_process';
 import cron from 'node-cron';
 import { addJob, JobType, QueueName } from './lib/task_queue.js';
 import { getLogger } from './lib/logger.js';
@@ -110,6 +110,15 @@ async function runMemoryConsolidation() {
     await archiveOldMemories(30);
     console.log('[scheduler] Memory consolidation completed');
     await saveLastRun('memory');
+      // Tier 4: Invalidate cache after memory consolidation
+      try {
+        const { default: SemanticCache } = await import('./lib/semantic_cache.js');
+        const cache = new SemanticCache();
+        await cache.initialize();
+        cache.invalidateByContext('memory');
+      } catch (cacheErr) {
+        logger.debug('[scheduler] Cache invalidation skipped:', cacheErr?.message);
+      }
   } catch (err) {
     // ponytail: Qdrant not available → memory consolidation silently fails, upgrade: add Qdrant or switch to SQLite vector store
     console.error('[scheduler] Memory consolidation error:', err?.message || err);
@@ -151,6 +160,16 @@ async function runPipeline() {
     if (signal) {
       console.log(`[scheduler] Pipeline process terminated with signal ${signal}`);
       await saveLastRun('pipeline');
+      // Tier 4: Invalidate stale cache entries after pipeline update
+      try {
+        const { default: SemanticCache } = await import('./lib/semantic_cache.js');
+        const cache = new SemanticCache();
+        await cache.initialize();
+        const invalidated = cache.invalidateByContext('pipeline');
+        if (invalidated > 0) logger.info(`[scheduler] Cache invalidated: ${invalidated} entries`);
+      } catch (cacheErr) {
+        logger.debug('[scheduler] Cache invalidation skipped:', cacheErr?.message);
+      }
     } else {
       console.log(`[scheduler] Pipeline process exited with code ${code}`);
       await saveLastRun('pipeline');

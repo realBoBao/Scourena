@@ -29,10 +29,11 @@ import { listVideos, cleanupOldVideos } from './lib/video_cdn.js';
 import { getSecurityHeaders, validateApiKey, isIpAllowed, checkBodySize, auditLog, validateBody, sanitizeString } from './lib/security.js';
 import { handleInteraction, registerSlashCommands } from './discord_interactions.js';
 import { handleJob } from './cloud_scheduler_triggers.js';
+import { info as logInfo, warn as logWarn, error as logError } from './lib/structured_logger.js';
 
 // Register Discord slash commands on startup (idempotent)
 registerSlashCommands().catch(err => {
-  console.warn('[REST API] Slash command registration failed:', err.message);
+  logWarn('REST API', 'slash command registration failed', { error: err.message });
 });
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -43,8 +44,7 @@ const PORT = process.env.PORT || process.env.REST_API_PORT || 3005;
 const API_KEY = process.env.REST_API_KEY || 'change-me-in-production';
 
 if (!API_KEY) {
-  console.warn('[REST API] WARNING: REST_API_KEY not set in .env. All authenticated endpoints will reject requests.');
-  console.warn('[REST API] Set REST_API_KEY in .env and restart to enable API access.');
+  logWarn('REST API', 'REST_API_KEY not set — all authenticated endpoints will reject requests');
 }
 
 // ── Auth Middleware (supports API key rotation) ──
@@ -336,7 +336,7 @@ route('POST', '/api/feedback', async (req, res) => {
   existing.push({ userId: userId || 'anonymous', feedback, rating: rating || 0, category: category || 'general', timestamp: new Date().toISOString() });
   fs.writeFileSync(feedbackFile, JSON.stringify(existing, null, 2));
 
-  console.log(`[Feedback] User ${userId || 'Anonymous'} rated ${rating || 0}: ${feedback.slice(0, 80)}`);
+  logInfo('REST API', 'feedback received', { user: userId || 'anonymous', rating: rating || 0, preview: feedback.slice(0, 80) });
   json(res, { ok: true, message: 'Feedback received' });
 }, { public: true });
 
@@ -501,13 +501,7 @@ route('POST', '/api/webhook/alerts', async (req, res) => {
   if (!alerts || !Array.isArray(alerts)) return json(res, { error: 'Invalid format' }, 400);
 
   // Forward to Discord bot if available
-  console.log('[Webhook] Received alerts:', alerts.length);
-  for (const alert of alerts) {
-    const name = alert.labels?.alertname || 'Unknown';
-    const severity = alert.labels?.severity || 'info';
-    const status = alert.status || 'unknown';
-    console.log(`[Alert] ${status.toUpperCase()} | ${severity} | ${name}`);
-  }
+  logInfo('REST API', 'webhook alerts received', { count: alerts.length, alerts: alerts.map(a => ({ name: a.labels?.alertname || 'unknown', severity: a.labels?.severity || 'info', status: a.status || 'unknown' })) });
 
   json(res, { ok: true, processed: alerts.length });
 }, { public: true });
@@ -814,7 +808,7 @@ const server = http.createServer(async (req, res) => {
   try {
     await matched.handler(req, res, matched.params);
   } catch (err) {
-    console.error('[API Error]', err.message);
+    logError('REST API', 'unhandled error', { error: err.message, stack: err.stack });
     json(res, { error: 'Internal server error' }, 500);
   } finally {
     clearTimeout(reqTimer);
@@ -833,11 +827,11 @@ let _shuttingDown = false;
 async function gracefulShutdown(signal) {
   if (_shuttingDown) return;
   _shuttingDown = true;
-  console.log(`[REST API] Received ${signal}, shutting down gracefully...`);
+  logInfo('REST API', 'shutdown signal received', { signal });
 
   // Stop accepting new connections
   server.close(() => {
-    console.log('[REST API] HTTP server closed');
+    logInfo('REST API', 'HTTP server closed');
   });
 
   // Close DB connections
@@ -849,9 +843,9 @@ async function gracefulShutdown(signal) {
     for (const close of dbs) {
       try { await close(); } catch {}
     }
-    console.log('[REST API] DB connections closed');
+    logInfo('REST API', 'DB connections closed');
   } catch (err) {
-    console.error('[REST API] Error closing DBs:', err.message);
+    logError('REST API', 'error closing DBs', { error: err.message });
   }
 
   // Flush semantic cache
@@ -861,12 +855,12 @@ async function gracefulShutdown(signal) {
     // Cache instances save themselves on interval
   } catch {}
 
-  console.log('[REST API] Shutdown complete');
+  logInfo('REST API', 'shutdown complete');
   process.exit(0);
 
   // Force exit after 10s safety net
   setTimeout(() => {
-    console.error('[REST API] Forced exit after timeout');
+    logError('REST API', 'forced exit after timeout');
     process.exit(1);
   }, 10000);
 }

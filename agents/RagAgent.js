@@ -1,4 +1,4 @@
-﻿import 'dotenv/config';
+import 'dotenv/config';
 import { HumanMessage } from '@langchain/core/messages';
 import fs from 'fs';
 import path from 'path';
@@ -1136,11 +1136,13 @@ export async function answerQuestion(query, options = {}) {
   }
 
   // ── Semantic Cache check (skip for deep search or cache bypass) ──────────
+  // Tier 2: Context-aware embedding — hash current context (file/topic) + query
+  const contextHash = options.contextHash || options.biasTopic || '';
   if (!options.skipCache && !options.isDeep && !options.bypassCache) {
     try {
       const cache = await getSemanticCache();
       const queryEmbedding = await embedTextCached(cleanQuery);
-      const cached = await cache.get(queryEmbedding, cleanQuery, { bypassCache: options.bypassCache });
+      const cached = await cache.get(queryEmbedding, cleanQuery, { bypassCache: options.bypassCache }, contextHash);
       if (cached) {
         logger.info(`[SemanticCache] HIT for: "${cleanQuery.slice(0, 50)}..." (sim: ${cached.similarity.toFixed(2)})`);
         return {

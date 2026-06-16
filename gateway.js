@@ -28,6 +28,7 @@ import http from 'http';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import { getSystemHealth, getPrometheusMetrics, checkAndAlert } from './lib/observability.js';
+import { info as logInfo, warn as logWarn, error as logError } from './lib/structured_logger.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -66,13 +67,13 @@ function startService(svc) {
 
   child.stdout.on('data', (d) => {
     for (const line of d.toString().trim().split('\n')) {
-      if (line.trim()) console.log(`[${svc.name}] ${line.trim()}`);
+      if (line.trim()) logInfo(svc.name, line.trim());
     }
   });
 
   child.stderr.on('data', (d) => {
     for (const line of d.toString().trim().split('\n')) {
-      if (line.trim()) console.error(`[${svc.name}] ${line.trim()}`);
+      if (line.trim()) logError(svc.name, line.trim());
     }
   });
 
@@ -81,12 +82,12 @@ function startService(svc) {
     state.process = null;
     state.status = 'stopped';
     if (code !== 0 && code !== null) {
-      console.error(`[Gateway] ${svc.name} exited code ${code}`);
+      logError('Gateway', 'service exited', { service: svc.name, code });
     }
     if (svc.restart && wasRunning && code !== 0) {
       state.restarts++;
       const delay = Math.min(state.restarts * 2000, 30000);
-      console.log(`[Gateway] ${svc.name}: restart in ${delay}ms (#${state.restarts})`);
+      logInfo('Gateway', 'service restart scheduled', { service: svc.name, delay_ms: delay, restart_count: state.restarts });
       setTimeout(() => startService(svc), delay);
     }
   });
@@ -94,11 +95,11 @@ function startService(svc) {
   setTimeout(() => {
     if (state.process && state.status === 'starting') {
       state.status = 'online';
-      console.log(`[Gateway] ${svc.name}: ONLINE ✅ (PID ${child.pid})`);
+      logInfo('Gateway', 'service online', { service: svc.name, pid: child.pid });
     }
   }, 3000);
 
-  console.log(`[Gateway] ${svc.name}: starting (PID ${child.pid})`);
+  logInfo('Gateway', 'service starting', { service: svc.name, pid: child.pid });
 }
 
 // ── Health Check (port 3000) ────────────────────────────────────────────────
@@ -357,13 +358,13 @@ function startHealthCheck() {
     // ── 404 ──
     res.writeHead(404); res.end('Not found');
   });
-  server.listen(3000, () => console.log('[Gateway] Health: http://localhost:3000/health ✅'));
+  server.listen(3000, () => logInfo('Gateway', 'health server listening', { port: 3000 }));
 }
 
 // ── Shutdown ────────────────────────────────────────────────────────────────
 
 function shutdown(signal) {
-  console.log(`\n[Gateway] ${signal} — stopping...`);
+  logInfo('Gateway', 'shutdown signal received', { signal });
   for (const svc of SERVICES) {
     if (serviceState[svc.name].process) serviceState[svc.name].process.kill('SIGTERM');
   }
@@ -375,26 +376,25 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
 // ── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
-  console.log('═══════════════════════════════════════════════');
-  console.log(`  AI Brain Gateway v${GATEWAY_VERSION} — Process Manager`);
-  console.log('═══════════════════════════════════════════════');
+  logInfo('Gateway', 'AI Brain Gateway starting', { version: GATEWAY_VERSION, services: SERVICES.length });
 
   startHealthCheck();
 
-  console.log(`\n[Gateway] Starting ${SERVICES.length} services...\n`);
+  logInfo('Gateway', 'starting services', { count: SERVICES.length });
+  console.log();
   for (const svc of SERVICES) startService(svc);
 
   setTimeout(() => {
     const mem = process.memoryUsage();
-    console.log('\n═══════════════════════════════════════════════');
+    const svcReport = {};
     for (const [n, s] of Object.entries(serviceState)) {
-      const icon = s.status === 'online' ? '✅' : s.status === 'starting' ? '⏳' : '❌';
-      console.log(`  ${icon} ${n.padEnd(12)} ${s.status.padEnd(10)} PID: ${s.process?.pid || '-'}`);
+      svcReport[n] = { status: s.status, pid: s.process?.pid || null };
     }
-    console.log(`\n  Gateway RAM: ${Math.round(mem.rss / 1024 / 1024)}MB`);
-    console.log('═══════════════════════════════════════════════');
-    console.log('\n  Ports: 3000=Health  3005=REST API  4002=Feedback');
-    console.log('═══════════════════════════════════════════════');
+    logInfo('Gateway', 'status report', {
+      services: svcReport,
+      gateway_ram_mb: Math.round(mem.rss / 1024 / 1024),
+      ports: { health: 3000, rest_api: 3005, feedback: 4002 },
+    });
   }, 5000);
 
   // Memory watchdog — log warning if gateway itself uses too much
@@ -402,7 +402,7 @@ async function main() {
     const mem = process.memoryUsage();
     const rssMB = mem.rss / 1024 / 1024;
     if (rssMB > 200) {
-      console.warn(`[Gateway] High memory: ${Math.round(rssMB)}MB — consider restart`);
+    logWarn('Gateway', 'high memory usage', { rss_mb: Math.round(rssMB) });
       if (global.gc) global.gc();
     }
   }, 60000);
@@ -412,9 +412,9 @@ async function main() {
     try {
       checkAndAlert();
     } catch (err) {
-      console.error('[Gateway] Health check error:', err.message);
+      logError('Gateway', 'health check error', { error: err.message });
     }
   }, 5 * 60 * 1000);
 }
 
-main().catch((err) => { console.error('[Gateway] Fatal:', err); process.exit(1); });
+main().catch((err) => { logError('Gateway', 'fatal error', { error: err.message, stack: err.stack }); process.exit(1); });
