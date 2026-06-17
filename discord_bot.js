@@ -420,9 +420,9 @@ client.on(Events.MessageCreate, async (message) => {
 
     // ── Tier 1: Idempotency check — chặn duplicate requests ──
     // Bypass cho lệnh nhanh (không cần cache vì chạy < 1s)
-    const isFastCommand = /^(?!help|voice|plugins|plugin unload|ping|status|uptime)/i.test(content);
+    const isFastCommand = /^(help|voice|plugins|plugin unload|ping|status|uptime)/i.test(content);
     try {
-      if (isFastCommand) {
+      if (!isFastCommand) {
         const { createKey, check, markProcessing, markDone } = await import('./lib/idempotency.js');
         const msgKey = createKey(`${message.author.id}:${message.content}`);
         const idemCheck = check(msgKey);
@@ -583,7 +583,7 @@ client.on(Events.MessageCreate, async (message) => {
 
     // ── !help command ──
     if (message.content === '!help' || message.content === '!help ') {
-      return message.reply({
+      return message.channel.send({
         content:
           '📋 **Danh sách lệnh AI Brain v6.0:**\n\n' +
           '**🔍 Hỏi đáp & Tìm kiếm:**\n' +

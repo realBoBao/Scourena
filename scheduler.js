@@ -12,9 +12,9 @@ const logger = getLogger('Scheduler');
 // Thay vào đó, dùng Google Cloud Scheduler → HTTP POST → /scheduler/:job
 const IS_CLOUD_RUN = !!process.env.K_SERVICE; // Cloud Run sets K_SERVICE env var
 
-// Cron schedule theo PDT (UTC-7)
-// 8AM=15:00UTC, 11AM=18:00UTC, 2PM=21:00UTC, 5PM=00:00UTC, 8PM=03:00UTC
-// Dùng timezone 'America/Los_Angeles' để cron tự động chuyển đổi
+// Cron schedule — dùng timezone từ env hoặc mặc định server local time
+// Mặc định: 8AM, 11AM, 2PM, 5PM, 8PM theo timezone server
+// Để dùng PDT: đặz CRON_TZ=America/Los_Angeles trong .env
 const CRON_SCHEDULE = process.env.CRON_SCHEDULE || '0 8,11,14,17,20 * * *';
 const RUN_ON_START = process.env.RUN_ON_START !== 'false';
 const FORCE_RUN = process.env.FORCE_PIPELINE === 'true';
@@ -257,7 +257,7 @@ async function checkCatchUp() {
   // ── Chạy catch-up cho từng job bị lỡ ──
   const missed = [];
 
-  // Pipeline catch-up
+  // Pipeline catch-up (>12h)
   const hsPipeline = hoursSince(lastPipeline);
   if (hsPipeline === null || hsPipeline > 12) {
     console.log('[scheduler] ⚠️ Pipeline missed! Running catch-up...');
@@ -268,7 +268,7 @@ async function checkCatchUp() {
     } catch (err) { console.error('[scheduler] Pipeline catch-up failed:', err.message); }
   }
 
-  // Memory consolidation catch-up
+  // Memory consolidation catch-up (>24h)
   const hsMemory = hoursSince(lastMemory);
   if (hsMemory === null || hsMemory > 24) {
     console.log('[scheduler] ⚠️ Memory consolidation missed! Running catch-up...');
@@ -276,12 +276,56 @@ async function checkCatchUp() {
     catch (err) { console.error('[scheduler] Memory catch-up failed:', err.message); }
   }
 
-  // Backup catch-up
+  // Backup catch-up (>168h = 7 days)
   const hsBackup = hoursSince(lastBackup);
   if (hsBackup === null || hsBackup > 168) {
     console.log('[scheduler] ⚠️ Backup missed! Running catch-up...');
     try { await runBackup(); missed.push('Backup'); }
     catch (err) { console.error('[scheduler] Backup catch-up failed:', err.message); }
+  }
+
+  // EvoAgent catch-up (>24h)
+  const hsEvo = hoursSince(parseLastRun(lastRuns.evo));
+  if (hsEvo === null || hsEvo > 24) {
+    console.log('[scheduler] ⚠️ EvoAgent missed! Running catch-up...');
+    try {
+      const { runDailyEvolution } = await import('./agents/EvoAgent.js');
+      await runDailyEvolution();
+      missed.push('EvoAgent');
+    } catch (err) { console.error('[scheduler] EvoAgent catch-up failed:', err.message); }
+  }
+
+  // Suggestion catch-up (>24h)
+  const hsSuggestion = hoursSince(parseLastRun(lastRuns.suggestion));
+  if (hsSuggestion === null || hsSuggestion > 24) {
+    console.log('[scheduler] ⚠️ Suggestion missed! Running catch-up...');
+    try {
+      const { runContextMonitor } = await import('./agents/SuggestionAgent.js');
+      await runContextMonitor();
+      missed.push('Suggestion');
+    } catch (err) { console.error('[scheduler] Suggestion catch-up failed:', err.message); }
+  }
+
+  // RSS fetch catch-up (>24h)
+  const hsRss = hoursSince(parseLastRun(lastRuns.rss));
+  if (hsRss === null || hsRss > 24) {
+    console.log('[scheduler] ⚠️ RSS fetch missed! Running catch-up...');
+    try {
+      const { runDailyRssFetch } = await import('./cron/daily_rss_fetch.js');
+      await runDailyRssFetch();
+      missed.push('RSS');
+    } catch (err) { console.error('[scheduler] RSS catch-up failed:', err.message); }
+  }
+
+  // Decay catch-up (>24h)
+  const hsDecay = hoursSince(parseLastRun(lastRuns.decay));
+  if (hsDecay === null || hsDecay > 24) {
+    console.log('[scheduler] ⚠️ Memory decay missed! Running catch-up...');
+    try {
+      const { memoryDecay } = await import('./lib/memory_decay.js');
+      memoryDecay.runDailyDecay();
+      missed.push('Decay');
+    } catch (err) { console.error('[scheduler] Decay catch-up failed:', err.message); }
   }
 
   if (missed.length > 0) console.log(`[scheduler] Catch-up done: ${missed.join(', ')}`);
@@ -321,21 +365,18 @@ setTimeout(() => {
 if (RUN_ON_START) {
   // Delay 30s startup to let other services initialize first
   setTimeout(async () => {
-    // Skip if catch-up already ran pipeline recently (within 5 minutes)
+    // Check if catch-up already ran pipeline recently (within 1 hour)
     try {
       const lastRuns = await readJsonSafe(CATCH_UP_FILE, {});
       const lastPipeline = lastRuns.pipeline?.ts ? new Date(lastRuns.pipeline.ts) : null;
-      if (lastPipeline && (Date.now() - lastPipeline.getTime()) < 300000) {
-        console.log('[scheduler] Startup pipeline skipped — catch-up ran recently');
+      if (lastPipeline && (Date.now() - lastPipeline.getTime()) < 3600000) {
+        console.log('[scheduler] Startup pipeline skipped — catch-up ran within 1h');
         return;
       }
     } catch { /* ignore */ }
 
-    // Skip startup run — cron jobs handle scheduled runs
-    // Catch-up logic above handles missed jobs
-    console.log('[scheduler] Startup pipeline skipped — waiting for cron schedule');
-    return;
-
+    // Run pipeline on startup if not caught up recently
+    console.log('[scheduler] Running startup pipeline...');
     try {
       runPipeline();
     } catch (err) {
@@ -470,6 +511,7 @@ if (!IS_CLOUD_RUN) {
           logger.error('[scheduler] Suggestion webhook failed:', webhookErr?.message || webhookErr);
         }
       }
+      await saveLastRun('suggestion');
     } catch (err) {
       logger.error('[scheduler] Suggestion error:', err?.message || err);
     }
@@ -483,6 +525,7 @@ if (!IS_CLOUD_RUN) {
       const { runDailyRssFetch } = await import('./cron/daily_rss_fetch.js');
       const result = await runDailyRssFetch();
       logger.info(`[scheduler] Daily RSS: ${result.articles} articles, ${result.flashcards} flashcards`);
+      await saveLastRun('rss');
     } catch (err) {
       logger.error('[scheduler] Daily RSS fetch error:', err?.message || err);
     }
