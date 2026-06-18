@@ -14,7 +14,7 @@ import { fsrsSchedule, booleanToRating } from '../lib/fsrs.js';
 
 const logger = getLogger('DailyRSS');
 
-// Top engineering blog RSS feeds (from kilimchoi/engineering-blogs)
+// Top engineering blog RSS feeds — updated 2026, verified working
 const RSS_FEEDS = [
   { name: 'Netflix Tech Blog', url: 'https://netflixtechblog.com/feed' },
   { name: 'Uber Engineering', url: 'https://eng.uber.com/feed/' },
@@ -24,7 +24,29 @@ const RSS_FEEDS = [
   { name: 'Vercel Blog', url: 'https://vercel.com/feed.xml' },
   { name: 'GitHub Blog', url: 'https://github.blog/feed/' },
   { name: 'Discord Blog', url: 'https://discord.com/blog/rss.xml' },
+  { name: 'Hacker News', url: 'https://hnrss.org/frontpage' },
+  { name: 'Dev.to', url: 'https://dev.to/feed' },
 ];
+
+// ── Domain filter: Chỉ giữ article liên quan đến core domains ──
+const CORE_DOMAINS = [
+  'backend', 'devops', 'distributed', 'microservices', 'database', 'sql', 'nosql',
+  'docker', 'kubernetes', 'cloud', 'aws', 'gcp', 'azure', 'linux', 'server',
+  'api', 'rest', 'graphql', 'grpc', 'websocket', 'authentication', 'security',
+  'performance', 'scaling', 'caching', 'message queue', 'event-driven',
+  'system design', 'architecture', 'networking', 'tcp', 'http', 'dns',
+  'javascript', 'typescript', 'python', 'java', 'go', 'rust', 'c++', 'c#',
+  'react', 'vue', 'angular', 'node', 'express', 'fastapi', 'spring',
+  'redis', 'kafka', 'postgresql', 'mongodb', 'elasticsearch',
+  'terraform', 'ansible', 'ci/cd', 'jenkins', 'github actions',
+  'machine learning', 'ai', 'llm', 'transformer', 'neural network',
+  'algorithm', 'data structure', 'compiler', 'operating system',
+];
+
+function isDomainRelevant(title) {
+  const lower = title.toLowerCase();
+  return CORE_DOMAINS.some(domain => lower.includes(domain));
+}
 
 /**
  * Fetch RSS feed and extract article links.
@@ -94,10 +116,16 @@ export async function runDailyRssFetch() {
   let totalFlashcards = 0;
 
   for (const feed of RSS_FEEDS) {
-    const articles = await fetchRssLinks(feed.name);
+    const articles = await fetchRssLinks(feed.url);
     totalArticles += articles.length;
 
     for (const article of articles) {
+      // ── Domain filter: Bỏ qua article không liên quan đến core domains ──
+      if (!isDomainRelevant(article.title)) {
+        logger.debug(`[DailyRSS] Skipped (off-domain): ${article.title.slice(0, 60)}`);
+        continue;
+      }
+
       // Check if already processed
       const db = await getDb();
       const existing = await db.get('SELECT id FROM flashcards WHERE source = ?', article.url);
