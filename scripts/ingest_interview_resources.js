@@ -168,6 +168,11 @@ async function main() {
     db.exec("CREATE INDEX IF NOT EXISTS idx_vectors_domain ON vectors(domain)");
   } catch { /* already exists */ }
 
+  // Xóa interview data cũ để insert fresh
+  db.prepare("DELETE FROM vectors WHERE id LIKE 'interview::%'").run();
+  db.prepare("DELETE FROM vectors WHERE domain = 'career'").run();
+  console.log('Cleared old interview data');
+
   // Tạo bảng algo_daily nếu chưa có
   db.prepare(`
     CREATE TABLE IF NOT EXISTS algo_daily (
@@ -215,7 +220,7 @@ async function main() {
 
         try {
           db.prepare(
-            'INSERT OR REPLACE INTO vectors (id, doc_id, chunk_index, chunk_text, embedding, domain, metadata, url, project, category, added_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+            'INSERT INTO vectors (id, doc_id, chunk_index, chunk_text, embedding, domain, metadata, url, project, category, added_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
           ).run(
             docId,
             `interview::${source.repo}`,
@@ -231,8 +236,11 @@ async function main() {
             new Date().toISOString()
           );
           totalIngested++;
-        } catch {
-          // skip duplicates
+        } catch (e) {
+          // Skip duplicates (UNIQUE constraint on id)
+          if (!e.message.includes('UNIQUE')) {
+            console.warn(`  Insert failed for ${docId}: ${e.message}`);
+          }
         }
       }
 
