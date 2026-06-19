@@ -2,7 +2,31 @@
 
 > Hệ thống AI đa tác nhân tự học, tự tiến hóa, tự bảo mật.
 > **VPS/PM2 Production | Ponytail Optimized**
-> **327+ tests PASS | 20 Agents | 7-tier RAG | Plugin System**
+> **197 tests PASS | 20 Agents | 7-tier RAG | Plugin System | Career Agent**
+
+---
+
+## Architecture
+
+```
+Discord Bot (dumb client)
+    ↓ HTTP/WebSocket
+API Server (gateway.js:3005)
+    ↓
+Orchestrator (RouterAgent + Persona Routing)
+    ↓
+20 Agents (Rag, Coder, Socratic, Manim, Vision, Debate, ...)
+    ↓
+7-tier RAG Pipeline
+    ↓
+SQLite Vector Store (domain-filtered) + BM25 + Knowledge Graph
+```
+
+### Tier System
+- **Tier 1**: Persona Routing (Therapist vs Technical) — skip RAG for casual chat
+- **Tier 2**: Decoupled Orchestrator — REST API independent of Discord
+- **Tier 3**: T-Shaped Learning — deep (spaced repetition) + broad (RSS news)
+- **Tier 4**: Career Agent — interview prep, job scraper, outreach drafting
 
 ---
 
@@ -67,7 +91,22 @@
 !plugins                    → Danh sách plugins
 !resources                  → Tài nguyên hệ thống
 !cli <command>              → Chạy CLI command
+!agentstats                 → Thống kê sử dụng agents
+!gaps                       → Xem knowledge gaps
+!cs                         → Xem CS curriculum
 !help                       → Danh sách lệnh
+```
+
+### Career & Interview
+```
+!draft <JD text>            → Soạn thản outreach (3 versions)
+!interview start            → Mock interview với Staff Engineer
+!interview end              → Kết thúc mock interview
+```
+
+### Camera (Web UI)
+```
+📷 Camera tab               → Nhận diện cảm xúc (demo mode)
 ```
 
 ---
@@ -75,8 +114,8 @@
 ## Quick Start (VPS/PM2)
 
 ```bash
-git clone https://github.com/realBoBao/Serena_Project00_Auto-Teaching.git
-cd Serena_Project00_Auto-Teaching
+git clone https://github.com/realBoBao/Serena_The-Accountant.git
+cd Serena_The-Accountant
 npm install
 cp .env.example .env
 # Edit .env with your API keys
@@ -84,9 +123,3 @@ npm test
 pm2 start ecosystem.config.cjs
 pm2 save
 ```
-
----
-
-## License
-
-MIT

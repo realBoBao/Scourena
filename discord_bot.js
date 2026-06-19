@@ -578,7 +578,14 @@ client.on(Events.MessageCreate, async (message) => {
           '**⚙️ Hệ thống:**\n' +
           '`!plugins` — Xem plugins\n' +
           '`!plugin unload <name>` — Unload plugin\n' +
+          '`!agentstats` — Thống kê sử dụng agents\n' +
           '`!help` — Xem danh sách lệnh\n\n' +
+          '**💼 Career & Interview:**\n' +
+          '`!draft <JD text>` — Soạn thảo outreach (3 versions)\n' +
+          '`!interview start` — Mock interview với Staff Engineer\n' +
+          '`!interview end` — Kết thúc mock interview\n\n' +
+          '**📷 Camera (Web UI):**\n' +
+          'Nhấn tab 📷 để nhận diện cảm xúc (demo mode)\n\n' +
           '**🤖 Serena** — AI Robot Girl Companion | MIT License',
         allowedMentions: { parse: [], repliedUser: false },
       });
