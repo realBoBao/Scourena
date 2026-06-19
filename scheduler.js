@@ -364,6 +364,7 @@ async function checkCatchUp() {
   }
 
   if (missed.length > 0) console.log(`[scheduler] Catch-up done: ${missed.join(', ')}`);
+  return missed.length > 0;
 }
 
 // Lưu last run time — atomic write với running flag
@@ -392,33 +393,36 @@ async function isJobRunning(type) {
   }
 }
 
-// Chạy catch-up check khi start (delay 60s để services khác khởi động xong)
-setTimeout(() => {
-  checkCatchUp().catch(err => console.error('[scheduler] Catch-up check failed:', err?.message || err));
-}, 60000);
-
-if (RUN_ON_START) {
-  // Delay 30s startup to let other services initialize first
-  setTimeout(async () => {
-    // Check if catch-up already ran pipeline recently (within 1 hour)
-    try {
+// ── Single startup trigger: Catch-up OR pipeline (NOT both) ──
+// Delay 60s để services khác khởi động xong
+setTimeout(async () => {
+  try {
+    // 1. Check catch-up (missed jobs khi PM2 restart)
+    const missed = await checkCatchUp();
+    
+    // 2. Nếu catch-up KHÔNG chạy pipeline → chạy startup pipeline
+    if (!missed) {
       const lastRuns = await readJsonSafe(CATCH_UP_FILE, {});
       const lastPipeline = lastRuns.pipeline?.ts ? new Date(lastRuns.pipeline.ts) : null;
-      if (lastPipeline && (Date.now() - lastPipeline.getTime()) < 3600000) {
-        console.log('[scheduler] Startup pipeline skipped — catch-up ran within 1h');
-        return;
+      const hoursSincePipeline = lastPipeline ? (Date.now() - lastPipeline.getTime()) / 3600000 : 999;
+      
+      if (hoursSincePipeline > 1) {
+        console.log('[scheduler] Running startup pipeline...');
+        try {
+          await runPipeline({ respectCooldown: false });
+        } catch (err) {
+          console.error('[scheduler] Startup pipeline failed:', err?.message || err);
+        }
+      } else {
+        console.log('[scheduler] Pipeline ran recently, skipping startup');
       }
-    } catch { /* ignore */ }
-
-    // Run pipeline on startup if not caught up recently
-    console.log('[scheduler] Running startup pipeline...');
-    try {
-      runPipeline({ respectCooldown: false });
-    } catch (err) {
-      console.error('[scheduler] Startup pipeline failed:', err?.message || err);
+    } else {
+      console.log('[Scheduler] Catch-up ran pipeline, skipping startup');
     }
-  }, 30000);
-}
+  } catch (err) {
+    console.error('[Scheduler] Startup trigger failed:', err?.message || err);
+  }
+}, 60000);
 
 // ── Dọn file .tmp còn sót từ crash trước ──
 cleanupStaleTempFiles('.').catch(() => {});
