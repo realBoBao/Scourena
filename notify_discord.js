@@ -1,3 +1,6 @@
+import fs from 'fs';
+import path from 'path';
+
 const CATEGORY_CONFIG = {
   Backend: { color: 0x0077ff, label: 'Backend' },
   AI: { color: 0x8a2be2, label: 'AI' },
@@ -6,6 +9,36 @@ const CATEGORY_CONFIG = {
   Algorithms: { color: 0xff4500, label: 'Algorithms' },
   Facebook: { color: 0x1877f2, label: 'Facebook' },
 };
+
+// ── Topic dedup: gửi cùng topic trong 24h chỉ 1 lần ──
+const TOPIC_DEDUP_FILE = path.resolve('./.topic_webhook_dedup.json');
+const TOPIC_DEDUP_TTL = 24 * 60 * 60 * 1000; // 24 giờ
+
+function isTopicSentRecently(topic) {
+  try {
+    const data = JSON.parse(fs.readFileSync(TOPIC_DEDUP_FILE, 'utf8'));
+    const key = topic.toLowerCase().trim();
+    const lastSent = data[key];
+    if (lastSent && Date.now() - lastSent < TOPIC_DEDUP_TTL) {
+      return true;
+    }
+  } catch { /* file not found or corrupt */ }
+  return false;
+}
+
+function markTopicSent(topic) {
+  try {
+    let data = {};
+    try { data = JSON.parse(fs.readFileSync(TOPIC_DEDUP_FILE, 'utf8')); } catch { /* ignore */ }
+    data[topic.toLowerCase().trim()] = Date.now();
+    // Cleanup old entries
+    const cutoff = Date.now() - TOPIC_DEDUP_TTL;
+    for (const [k, v] of Object.entries(data)) {
+      if (v < cutoff) delete data[k];
+    }
+    fs.writeFileSync(TOPIC_DEDUP_FILE, JSON.stringify(data, null, 2), 'utf8');
+  } catch { /* ignore */ }
+}
 
 const LIMITS = {
   title: 256,
@@ -122,6 +155,12 @@ export async function sendAggregatedWebhook({ topic, results, bullets, isError =
   if (!webhook) throw new Error('DISCORD_WEBHOOK not set');
   if (!isHttpUrl(webhook)) throw new Error('DISCORD_WEBHOOK must be a valid http(s) URL');
 
+  // ── Topic dedup: bỏ qua nếu cùng topic đã gửi trong 24h ──
+  if (!isError && results && results.length > 0 && isTopicSentRecently(topic)) {
+    console.log(`[Webhook] Topic "${topic}" sent within 24h, skipping duplicate`);
+    return false;
+  }
+
   // ── Nếu không có source → gửi thông báo server status ──
   if (!results || results.length === 0) {
     if (isError) {
@@ -219,6 +258,7 @@ export async function sendAggregatedWebhook({ topic, results, bullets, isError =
   }
 
   console.log(`[Webhook] ✓ Sent aggregated embed with ${sorted.length} sources`);
+  markTopicSent(topic);
   return true;
 }
 

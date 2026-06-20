@@ -61,11 +61,21 @@ SQLite Vector Store (domain-filtered) + BM25 + Knowledge Graph
 
 ### Voice Channel
 ```
-!voice join                 → Tham gia voice channel
-!voice leave                → Rời voice channel
+!join                       → Tham gia voice channel
+!leave                      → Rời voice channel
+!vc on                      → Bật voice conversation (nghe & nói tự nhiên)
+!vc off                     → Tắt voice conversation
 !voice study                → Bật chế độ học (bot im lặng)
 !voice stop                 → Tắt chế độ học
 !voice + audio              → Transcribe giọng nói (whisper.cpp)
+
+**Voice Conversation Flow:**
+1. `!join` → Bot vào voice channel
+2. `!vc on` → Bật chế độ nghe & nói
+3. Bạn nói gì đó → Bot nghe (Whisper STT) → LLM trả lời → Bot nói (edge-tts giọng nữ)
+4. `!vc off` → Tắt / `!leave` → Bot rời
+
+⚠️ Cần enable `whisper-large-v3-turbo` tại https://console.groq.com/settings/project/limits
 ```
 
 ### Học tập

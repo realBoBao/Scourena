@@ -522,15 +522,25 @@ export async function invokeLlm(messages, label) {
   const startTime = Date.now();
 
   try {
-    // Dùng unified LLM layer: Gemini → OpenRouter → Local → Static
-    const result = await llmAsk(query, {
-      systemPrompt,
-      temperature: 0.2,
-      maxTokens: 1024,
-    });
+    // Dùng unified LLM layer: Groq → OpenRouter → Gemini → Local → Static
+    // Thêm timeout 15s để tránh hang
+    const result = await Promise.race([
+      llmAsk(query, {
+        systemPrompt,
+        temperature: 0.2,
+        maxTokens: 1024,
+        timeoutMs: 15000,
+      }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('LLM timeout')), 18000)),
+    ]);
 
     const latencyMs = Date.now() - startTime;
     recordModelCall(result.model, { latencyMs, success: true });
+
+    // Nếu LLM trả về static fallback → vẫn dùng nhưng log warning
+    if (result.provider === 'static') {
+      logger.warn(`[LLM Gateway] ${label} → STATIC FALLBACK (all API providers failed)`);
+    }
 
     // Auto-evaluate and feed back to bandit
     if (banditStrategy) {
@@ -543,7 +553,9 @@ export async function invokeLlm(messages, label) {
   } catch (err) {
     const latencyMs = Date.now() - startTime;
     recordModelCall('unknown', { latencyMs, success: false });
-    throw err;
+    logger.error(`[LLM Gateway] ${label} FAILED: ${err?.message || err}`);
+    // Trả về null thay vì throw để caller có thể fallback gracefully
+    return null;
   }
 }
 
@@ -1074,10 +1086,22 @@ async function synthesizeAnswer(query, context, sourceType, userId = null) {
   try {
     answer = await invokeLlm([new HumanMessage(systemInstruction), new HumanMessage(prompt)], 'LLM');
   } catch (err) {
-    logger.warn('[RagAgent] synthesizeAnswer LLM failed, using context fallback:', err?.message);
-    // Fallback: trả về context summary khi LLM không available
+    logger.warn('[RagAgent] synthesizeAnswer LLM failed:', err?.message);
+    answer = null;
+  }
+
+  // Nếu LLM trả về null hoặc rỗng → dùng context fallback
+  if (!answer || !answer.trim()) {
+    logger.warn('[RagAgent] LLM returned empty/null, using context fallback');
     const contextSummary = context.slice(0, 2000);
-    answer = `⚠️ LLM tạm thời không khả dụng (rate limited). Dưới đây là thông tin tham khảo:\n\n${contextSummary}`;
+    const sourcesList = results?.slice(0, 5).map((r, i) => {
+      const title = r.title || r.doc_id || r.url || `Source ${i + 1}`;
+      const url = r.url || '';
+      const score = r.score ? ` (score: ${Number(r.score).toFixed(2)})` : '';
+      return url ? `${i + 1}. [${title.slice(0, 60)}](${url})${score}` : `${i + 1}. ${title.slice(0, 60)}${score}`;
+    }).join('\n') || 'Không tìm thấy nguồn cụ thể.';
+
+    answer = `⚠️ LLM tạm thời không phản hồi. Dưới đây là các nguồn liên quan tìm được:\n\n${sourcesList}\n\n💡 Bạn có thể thử lại sau hoặc dùng \`!ask <câu hỏi> --deep\` để tìm kiếm sâu hơn.`;
   }
 
   // ── Grounding Verify: Ép LLM trích dẫn nguồn ──
@@ -1178,6 +1202,14 @@ export async function answerQuestion(query, options = {}) {
       source: 'validation',
       results: [],
     };
+  }
+
+  // ── Ensure DB is open (fix: database is not open error) ──
+  try {
+    const { getDb } = await import('../lib/sqlite_adapter.js');
+    getDb(); // Will auto-open if not already open
+  } catch (err) {
+    logger.warn('[RagAgent] DB init failed:', err?.message || err);
   }
 
   // ── Tier 3: Query Quality Gate — đánh giá câu hỏi TRƯỚC khi vào RAG ──

@@ -37,6 +37,10 @@ const requestQueue = [];
 let isProcessingQueue = false;
 const MAX_QUEUE_SIZE = 50; // Prevent memory leak from spam
 
+// ── User-level query dedup: block cùng user + cùng query trong 1 giờ ──
+const _userQueryCache = new Map(); // userId:{queryHash} → timestamp
+const USER_QUERY_DEDUP_MS = 60 * 60 * 1000; // 1 giờ
+
 const token = process.env.DISCORD_BOT_TOKEN?.trim();
 const prefix = process.env.DISCORD_COMMAND_PREFIX || '!ask ';
 const interestTopics = new Map();
@@ -169,6 +173,15 @@ client.once(Events.ClientReady, async (readyClient) => {
   initSemanticRouter().catch(err => {
     console.warn('[SemanticRouter] Init failed, using keyword fallback:', err.message);
   });
+
+  // Init SQLite DB (required for RagAgent, flashcard, mood, etc.)
+  try {
+    const { openDb } = await import('./lib/sqlite_adapter.js');
+    await openDb();
+    console.log('[DB] SQLite initialized');
+  } catch (err) {
+    console.error('[DB] Init failed:', err.message);
+  }
 
   // Load plugins
   try {
@@ -444,6 +457,25 @@ client.on(Events.MessageCreate, async (message) => {
       }
     } catch { /* idempotency optional */ }
 
+    // ── User-level query dedup: block cùng query từ cùng user trong 1 giờ ──
+    try {
+      const queryHash = require('crypto').createHash('md5').update(content.toLowerCase().trim()).digest('hex');
+      const userKey = message.author.id + ':' + queryHash;
+      const lastTime = _userQueryCache.get(userKey);
+      if (lastTime && Date.now() - lastTime < USER_QUERY_DEDUP_MS) {
+        logger.info(`[Dedup] User ${message.author.id} sent same query within 1h, skipping`);
+        return; // Bỏ qua — đã xử lý query này gần đây
+      }
+      _userQueryCache.set(userKey, Date.now());
+      // Cleanup old entries (giữ < 5000 entries)
+      if (_userQueryCache.size > 5000) {
+        const cutoff = Date.now() - USER_QUERY_DEDUP_MS;
+        for (const [k, v] of _userQueryCache) {
+          if (v < cutoff) _userQueryCache.delete(k);
+        }
+      }
+    } catch { /* dedup optional */ }
+
     // Token Bucket rate limit
     if (!checkTokenBucket(message.author.id)) {
       return; // Silent drop — bucket rỗng
@@ -620,9 +652,11 @@ client.on(Events.MessageCreate, async (message) => {
           '`!memory <nội dung>` — Lưu trí nhớ\n' +
           '`!f1stats` — F1 Score Dashboard\n\n' +
           '**🎙️ Voice:**\n' +
-          '`!voice join` — Tham gia voice\n' +
-          '`!voice leave` / `!leave` — Rời voice\n' +
-          '`!voice study` — Chế độ học\n' +
+          '`!join` — Tham gia voice channel\n' +
+          '`!leave` — Rời voice channel\n' +
+          '`!vc on` — Bật voice conversation (nghe & nói)\n' +
+          '`!vc off` — Tắt voice conversation\n' +
+          '`!voice study` — Chế độ học (im lặng)\n' +
           '`!voice stop` — Tắt chế độ học\n\n' +
           '**⚙️ Hệ thống:**\n' +
           '`!plugins` — Xem plugins\n' +
@@ -824,8 +858,39 @@ client.on(Events.MessageCreate, async (message) => {
           query,
           options: { userId: message.author.id, history },
         }, message.author.id);
-        const reply = ragResult?.answer || ragResult?.text || ragResult?.result?.answer || ragResult?.result?.text || 'Không tìm thấy câu trả lời.';
-        await message.reply(reply);
+
+        // Build formatted reply with sources
+        const answer = ragResult?.answer || ragResult?.text || ragResult?.result?.answer || ragResult?.result?.text || 'Không tìm thấy câu trả lời.';
+        const sourcesFormatted = ragResult?.sourcesFormatted || ragResult?.result?.sourcesFormatted || '';
+        const source = ragResult?.source || ragResult?.result?.source || 'unknown';
+        const confidence = ragResult?.confidence || ragResult?.result?.confidence;
+
+        // Build final message
+        let reply = answer;
+
+        // Add sources section if available
+        if (sourcesFormatted && sourcesFormatted.trim()) {
+          reply += `\n\n---\n📚 **Nguồn tham kháo:**\n${sourcesFormatted}`;
+        }
+
+        // Add confidence badge
+        if (confidence) {
+          const confScore = Math.round((confidence.score || 0) * 100);
+          const confEmoji = confScore >= 80 ? '🟢' : confScore >= 50 ? '🟡' : '🔴';
+          reply += `\n\n${confEmoji} Độ tin cậy: ${confScore}% | 📡 Nguồn: ${source}`;
+        }
+
+        // Add feedback hint
+        reply += '\n\n👍 Hữu ích | 👎 Không hữu ích';
+
+        const sentMsg = await message.reply(reply);
+
+        // Add reaction buttons
+        try {
+          await sentMsg.react('👍');
+          await sentMsg.react('👎');
+        } catch { /* reactions optional */ }
+
         // Save assistant reply to session memory
         try {
           const { SessionMemory } = await import('./lib/session_memory.js');
