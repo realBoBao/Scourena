@@ -485,10 +485,10 @@ client.on(Events.MessageCreate, async (message) => {
           await message.reply('❌ Bạn cần vào voice channel trước!');
           return;
         }
-        const { joinChannel } = await import('./agents/VoiceChannel.js');
+        const { joinChannel } = await import('./agents/voice_conversation.js');
         const result = await joinChannel(voiceChannel);
         if (result.success) {
-          await message.reply(`🎙️ Đã tham gia voice channel **${voiceChannel.name}**! Tôi sẽ nghe và trả lời bạn.`);
+          await message.reply(`🎙️ Đã tham gia voice channel **${voiceChannel.name}**! Dùng \`!vc on\` để bật chế độ nghe & nói.`);
         } else {
           await message.reply(`❌ Lỗi: ${result.error}`);
         }
@@ -503,9 +503,52 @@ client.on(Events.MessageCreate, async (message) => {
         if (!message.guild) {
           return message.reply('❌ Lệnh này chỉ dùng trong server, không dùng được trong DM.');
         }
-        const { leaveChannel } = await import('./agents/VoiceChannel.js');
+        const { leaveChannel } = await import('./agents/voice_conversation.js');
         leaveChannel(message.guild.id);
         await message.reply('👋 Đã rời voice channel.');
+      } catch (err) {
+        await message.reply('❌ Lỗi: ' + err.message);
+      }
+      return;
+    }
+
+    // ── Voice Conversation: !vc on / !vc off ──
+    if (content === '!vc on' || content === '!vc start') {
+      try {
+        if (!message.guild) return message.reply('❌ Chỉ dùng trong server.');
+        const { isConnected, startListening } = await import('./agents/voice_conversation.js');
+        if (!isConnected(message.guild.id)) {
+          // Tự động join nếu user đang trong voice channel
+          const voiceChannel = message.member?.voice?.channel;
+          if (!voiceChannel) {
+            return message.reply('❌ Bạn cần vào voice channel trước! Dùng `!join` để mời bot.');
+          }
+          const { joinChannel } = await import('./agents/voice_conversation.js');
+          const r = await joinChannel(voiceChannel);
+          if (!r.success) return message.reply(`❌ Lỗi join: ${r.error}`);
+        }
+        const result = startListening(message.guild.id);
+        if (result.success) {
+          await message.reply('🎤 **Voice conversation BẬT!** Tôi sẽ nghe bạn nói và trả lời bằng giọng nữ. Nói đi! 🗣️');
+        } else {
+          await message.reply(`❌ Lỗi: ${result.error}`);
+        }
+      } catch (err) {
+        await message.reply('❌ Lỗi: ' + err.message);
+      }
+      return;
+    }
+
+    if (content === '!vc off' || content === '!vc stop') {
+      try {
+        if (!message.guild) return message.reply('❌ Chỉ dùng trong server.');
+        const { stopListening } = await import('./agents/voice_conversation.js');
+        const result = stopListening(message.guild.id);
+        if (result.success) {
+          await message.reply('🔇 **Voice conversation TẮT.** Tôi sẽ không nghe nữa.');
+        } else {
+          await message.reply(`❌ Lỗi: ${result.error}`);
+        }
       } catch (err) {
         await message.reply('❌ Lỗi: ' + err.message);
       }
