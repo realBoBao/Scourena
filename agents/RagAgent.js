@@ -479,6 +479,11 @@ function formatSourcesWithScore(results, type = 'web', maxItems = 5) {
     if (type === 'local') {
       if (r.collection) line += ` | 📁 ${r.collection}`;
       if (r.hybridScore != null) line += ` | hybrid: ${r.hybridScore.toFixed(3)}`;
+      // Add chunk preview for local results (first 120 chars)
+      if (r.chunk_text) {
+        const preview = r.chunk_text.replace(/\n/g, ' ').trim().slice(0, 120);
+        line += `\n   📝 ${preview}${r.chunk_text.length > 120 ? '...' : ''}`;
+      }
     }
 
     lines.push(line);
@@ -1104,7 +1109,6 @@ async function synthesizeAnswer(query, context, sourceType, userId = null) {
   let answer;
   try {
     answer = await invokeLlm([new HumanMessage(systemInstruction), new HumanMessage(prompt)], 'LLM');
-    logger.info(`[synthesizeAnswer] LLM result: ${answer ? answer.slice(0, 100) : 'NULL'}`);
   } catch (err) {
     logger.warn('[RagAgent] synthesizeAnswer LLM failed:', err?.message);
     answer = null;
@@ -1150,7 +1154,6 @@ async function synthesizeAnswer(query, context, sourceType, userId = null) {
     }
   } catch (mErr) { logger.debug('[synthesizeAnswer] mem0 outer failed:', mErr?.message); }
 
-  logger.info(`[synthesizeAnswer] about to return, answer type: ${typeof answer}, len: ${answer?.length}`);
   return answer;
   } catch (synthErr) {
     logger.error('[synthesizeAnswer] INTERNAL ERROR:', synthErr?.message || String(synthErr), '\nSTACK:', synthErr?.stack?.split('\n').slice(0, 5).join('\n'));
@@ -1360,12 +1363,10 @@ export async function answerQuestion(query, options = {}) {
       let answer;
       try {
         answer = await synthesizeAnswer(cleanQuery, context, 'local');
-        logger.info(`[answerQuestion] synthesizeAnswer returned: type=${typeof answer}, len=${answer?.length}, preview=${String(answer).slice(0, 80)}`);
       } catch (synthErr) {
-        logger.error('[answerQuestion] synthesizeAnswer threw:', synthErr?.message || String(synthErr), '\nSTACK:', synthErr?.stack?.split('\n').slice(0, 5).join('\n'));
+        logger.warn('[answerQuestion] synthesizeAnswer failed:', synthErr?.message || String(synthErr));
         answer = null;
       }
-      logger.info(`[answerQuestion] after synthesizeAnswer, answer is ${answer ? 'TRUTHY' : 'FALSY'}, answerQuestion continuing...`);
 
       // Skip self-reflect gate for now — just use the answer directly
       if (answer && answer.trim()) {
