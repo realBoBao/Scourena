@@ -36,7 +36,7 @@ jobs:
           node-version: '22'
           cache: 'npm'
       - run: npm install --legacy-peer-deps
-      - run: node --experimental-vm-modules node_modules/jest/bin/jest.js tests/socratic.test.js tests/incident_agent.test.js tests/shadow_review.test.js tests/mood_state.test.js tests/vector_collections.test.js tests/flashcard_generator.test.js tests/groq_provider.test.js tests/datalog_engine.test.js tests/vibe_coding_audit.test.js tests/privileged_agent.test.js tests/code_sandbox.test.js tests/sandbox_security.test.js --no-cache --no-coverage --silent
+      - run: node --experimental-vm-modules node_modules/jest/bin/jest.js tests/socratic.test.js tests/incident_agent.test.js tests/shadow_review.test.js tests/mood_state.test.js tests/vector_collections.test.js tests/flashcard_generator.test.js tests/groq_provider.test.js tests/datalog_engine.test.js tests/vibe_coding_audit.test.js tests/privileged_agent.test.js tests/code_sandbox.test.js tests/sandbox_security.test.js --no-cache --no-coverage --runInBand
         env:
           CI: true
 
