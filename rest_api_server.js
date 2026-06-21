@@ -348,15 +348,54 @@ route('POST', '/api/ask', async (req, res) => {
   if (!validation.ok) return json(res, { error: validation.errors.join('; ') }, 400);
 
   const { query } = validation.data;
-  const { answerQuestion } = await import('./agents/RagAgent.js');
-  const result = await answerQuestion(query);
-  json(res, {
-    ok: true,
-    answer: result.answer,
-    source: result.source,
-    sourcesFormatted: result.sourcesFormatted || null,
-    resultsCount: result.results?.length || 0,
-  });
+
+  // ── Tier 1: Semantic Cache check ──
+  try {
+    const { get, set } = await import('./lib/semantic_cache.js');
+    const { embedText } = await import('./lib/embeddings.js');
+    const { SemanticCache } = await import('./lib/semantic_cache.js');
+    const cache = new SemanticCache({ threshold: 0.92, maxEntries: 500 });
+    await cache.initialize();
+    const queryEmbedding = await embedText(query);
+    const cached = await cache.get(queryEmbedding);
+    if (cached) {
+      logger.debug('[API] Cache hit for:', query.slice(0, 40));
+      return json(res, {
+        ok: true,
+        answer: cached.answer,
+        source: 'cache',
+        cached: true,
+        resultsCount: 0,
+      });
+    }
+
+    // ── Cache miss → call LLM ──
+    const { answerQuestion } = await import('./agents/RagAgent.js');
+    const result = await answerQuestion(query);
+
+    // ── Store in cache ──
+    await cache.set(queryEmbedding, result.answer, result.source);
+
+    json(res, {
+      ok: true,
+      answer: result.answer,
+      source: result.source,
+      sourcesFormatted: result.sourcesFormatted || null,
+      resultsCount: result.results?.length || 0,
+    });
+  } catch (err) {
+    // If cache fails, fallback to direct LLM call
+    logger.warn('[API] Cache error, falling back to direct call:', err.message);
+    const { answerQuestion } = await import('./agents/RagAgent.js');
+    const result = await answerQuestion(query);
+    json(res, {
+      ok: true,
+      answer: result.answer,
+      source: result.source,
+      sourcesFormatted: result.sourcesFormatted || null,
+      resultsCount: result.results?.length || 0,
+    });
+  }
 });
 
 // ── Flashcard CRUD ──

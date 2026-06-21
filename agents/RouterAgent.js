@@ -182,6 +182,8 @@ class RouterAgent {
       errors: 0,
       shadowComparisons: 0,
     };
+    // ── Tier 5: Agent usage tracking ──
+    this._agentUsage = new Map(); // agentKey → { count, lastCalled }
     this._shadowEnabled = process.env.SHADOW_MODE === 'true';
     if (this._shadowEnabled) {
       info('RouterAgent', 'shadow launching enabled');
@@ -270,6 +272,9 @@ class RouterAgent {
 
     const agent = AGENT_REGISTRY[agentKey];
     logger.info(`Routing intent "${intent}" → ${agent.name}`);
+
+    // ── Tier 5: Track agent usage ──
+    this._trackAgentCall(agentKey);
 
     try {
       // Lazy load agent module (chỉ import khi cần)
@@ -489,6 +494,20 @@ class RouterAgent {
     this._stats = { totalRequests: 0, agentCalls: {}, errors: 0, shadowComparisons: 0 };
   }
 
+  // ── Tier 5: Track agent usage ──
+  _trackAgentCall(agentKey) {
+    if (!this._stats.agentCalls[agentKey]) {
+      this._stats.agentCalls[agentKey] = 0;
+    }
+    this._stats.agentCalls[agentKey]++;
+    // Also track in-memory for fast access
+    const existing = this._agentUsage.get(agentKey) || { count: 0, lastCalled: null };
+    this._agentUsage.set(agentKey, {
+      count: existing.count + 1,
+      lastCalled: new Date().toISOString(),
+    });
+  }
+
   // ── Step 6: Continuous Improvement — getAgentUsage for quality tracking
   getAgentUsage() {
     const usage = new Map();
@@ -496,6 +515,39 @@ class RouterAgent {
       usage.set(agent, count);
     }
     return usage;
+  }
+
+  // ── Tier 5: Get detailed agent usage with last called time ──
+  getDetailedAgentUsage() {
+    const result = [];
+    for (const [key, agent] of Object.entries(AGENT_REGISTRY)) {
+      const usage = this._agentUsage.get(key) || { count: 0, lastCalled: null };
+      result.push({
+        key,
+        name: agent.name,
+        enabled: agent.enabled,
+        cost: agent.cost,
+        calls: usage.count,
+        lastCalled: usage.lastCalled,
+      });
+    }
+    return result.sort((a, b) => b.calls - a.calls);
+  }
+
+  // ── Tier 5: Auto-disable agents with 0 calls in 7 days ──
+  getUnusedAgents(daysThreshold = 7) {
+    const threshold = Date.now() - daysThreshold * 86400000;
+    const unused = [];
+    for (const [key, agent] of Object.entries(AGENT_REGISTRY)) {
+      if (!agent.enabled) continue;
+      const usage = this._agentUsage.get(key);
+      if (!usage || !usage.lastCalled) {
+        unused.push({ key, name: agent.name, reason: 'never called' });
+      } else if (new Date(usage.lastCalled).getTime() < threshold) {
+        unused.push({ key, name: agent.name, reason: `last called ${usage.lastCalled}` });
+      }
+    }
+    return unused;
   }
 }
 

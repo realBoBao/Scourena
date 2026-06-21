@@ -681,22 +681,29 @@ client.on(Events.MessageCreate, async (message) => {
       return;
     }
 
-    // ── !agentstats command: Agent Usage Statistics ──
+    // ── !agentstats command: Agent Usage Statistics (Tier 5) ──
     if (content === '!agentstats') {
       try {
-        const { orchestratorGuard } = await import('./lib/orchestrator_guard.js');
-        const usage = orchestratorGuard.getAgentUsage();
-        if (usage.size === 0) {
+        const { routerAgent } = await import('./agents/RouterAgent.js');
+        const detailed = routerAgent.getDetailedAgentUsage();
+        if (detailed.length === 0) {
           return message.reply('📊 Chưa có dữ liệu agent usage. Hãy dùng vài lệnh trước!');
         }
-        const lines = [...usage.entries()].sort(([, a], [, b]) => b - a)
-          .map(([name, count]) => `• **${name}**: ${count} calls`);
+        const lines = detailed
+          .filter(a => a.calls > 0)
+          .map(a => `• **${a.name}**: ${a.calls} calls | cost: ${a.cost} | ${a.enabled ? '✅' : '❌'}`);
+        const unused = routerAgent.getUnusedAgents(7);
+        let description = lines.join('\n');
+        if (unused.length > 0) {
+          description += '\n\n**⚠️ Agents chưa dùng 7 ngày:**\n';
+          description += unused.map(a => `• **${a.name}**: ${a.reason}`).join('\n');
+        }
         return message.reply({
           embeds: [{
             color: 0x7F77DD,
             title: '📊 Agent Usage Statistics',
-            description: lines.join('\n'),
-            footer: { text: 'Track since last restart' },
+            description: description.slice(0, 4000),
+            footer: { text: 'Track since last restart — dùng !agentstats để xem chi tiết' },
           }],
           allowedMentions: { parse: [], repliedUser: false },
         });

@@ -1378,7 +1378,7 @@ export async function answerQuestion(query, options = {}) {
             source: 'local',
             results: localResults,
             predictedTopic,
-            sourcesFormatted: localResults.slice(0, 3).map((r, i) => `${i+1}. ${r.doc_id || r.url || 'N/A'}`).join('\n'),
+            sourcesFormatted: localResults.slice(0, 7).map((r, i) => `${i+1}. ${r.doc_id || r.url || 'N/A'}`).join('\n'),
             confidence: { score: 0.7, level: 'medium' },
           };
         }
@@ -1442,7 +1442,7 @@ export async function answerQuestion(query, options = {}) {
         sourcesFormatted = formatSourcesWithScore(localResults, 'local');
       } catch (fmtErr) {
         logger.warn('[answerQuestion] formatSourcesWithScore failed:', fmtErr?.message);
-        sourcesFormatted = localResults.slice(0, 3).map((r, i) => `${i+1}. ${r.doc_id || r.url || 'N/A'}`).join('\n');
+        sourcesFormatted = localResults.slice(0, 7).map((r, i) => `${i+1}. ${r.doc_id || r.url || 'N/A'}`).join('\n');
       }
       return { ...scored, source: 'local', results: localResults, predictedTopic, sourcesFormatted };
     }
