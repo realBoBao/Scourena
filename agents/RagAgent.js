@@ -1034,6 +1034,7 @@ async function searchGitHub(query) {
 }
 
 async function synthesizeAnswer(query, context, sourceType, userId = null) {
+  try {
   // Build source quality summary for the LLM
   let sourceInfo = '';
   if (sourceType === 'web') {
@@ -1124,28 +1125,37 @@ async function synthesizeAnswer(query, context, sourceType, userId = null) {
   }
 
   // ── Grounding Verify: Ép LLM trích dẫn nguồn ──
-  if (answer && answer.length > 100 && results?.length > 0) {
-    try {
-      const { verifyWithCitation, formatDisclaimer } = await import('../lib/grounding_verifier.js');
-      const grounding = await verifyWithCitation(query, answer, results, ask);
+  try {
+    if (answer && answer.length > 100 && results?.length > 0) {
+      try {
+        const { verifyWithCitation, formatDisclaimer } = await import('../lib/grounding_verifier.js');
+        const grounding = await verifyWithCitation(query, answer, results, ask);
 
-      if (!grounding.verified) {
-        const disclaimer = formatDisclaimer(grounding);
-        answer = answer + disclaimer;
-        logger.info(`[RagAgent] Grounding: ungrounded answer flagged (${grounding.unsupportedClaims?.length || 0} unsupported claims)`);
-      }
-    } catch { /* grounding optional */ }
-  }
+        if (!grounding.verified) {
+          const disclaimer = formatDisclaimer(grounding);
+          answer = answer + disclaimer;
+          logger.info(`[RagAgent] Grounding: ungrounded answer flagged (${grounding.unsupportedClaims?.length || 0} unsupported claims)`);
+        }
+      } catch (gErr) { logger.debug('[synthesizeAnswer] grounding failed:', gErr?.message); }
+    }
+  } catch (gErr2) { logger.debug('[synthesizeAnswer] grounding outer failed:', gErr2?.message); }
 
   // ── Mem0: Record Q&A for future context ──
-  if (userId && answer && answer.length > 50) {
-    try {
-      const { addMemory } = await import('../lib/mem0_client.js');
-      await addMemory(userId, `Q: ${query.slice(0, 200)}\nA: ${answer.slice(0, 300)}`);
-    } catch { /* mem0 optional */ }
-  }
+  try {
+    if (userId && answer && answer.length > 50) {
+      try {
+        const { addMemory } = await import('../lib/mem0_client.js');
+        await addMemory(userId, `Q: ${query.slice(0, 200)}\nA: ${answer.slice(0, 300)}`);
+      } catch (memErr) { /* mem0 optional */ }
+    }
+  } catch (mErr) { logger.debug('[synthesizeAnswer] mem0 outer failed:', mErr?.message); }
 
+  logger.info(`[synthesizeAnswer] about to return, answer type: ${typeof answer}, len: ${answer?.length}`);
   return answer;
+  } catch (synthErr) {
+    logger.error('[synthesizeAnswer] INTERNAL ERROR:', synthErr?.message || String(synthErr), '\nSTACK:', synthErr?.stack?.split('\n').slice(0, 5).join('\n'));
+    throw synthErr; // re-throw so caller knows
+  }
 }
 
 async function selfReflectAnswerGate({ query, answer, results, source }) {
@@ -1350,11 +1360,12 @@ export async function answerQuestion(query, options = {}) {
       let answer;
       try {
         answer = await synthesizeAnswer(cleanQuery, context, 'local');
-        logger.info(`[answerQuestion] synthesizeAnswer returned: ${answer ? answer.slice(0, 100) : 'NULL'}`);
+        logger.info(`[answerQuestion] synthesizeAnswer returned: type=${typeof answer}, len=${answer?.length}, preview=${String(answer).slice(0, 80)}`);
       } catch (synthErr) {
-        logger.error('[answerQuestion] synthesizeAnswer threw:', synthErr?.message, '\nSTACK:', synthErr?.stack?.split('\n').slice(0, 5).join('\n'));
+        logger.error('[answerQuestion] synthesizeAnswer threw:', synthErr?.message || String(synthErr), '\nSTACK:', synthErr?.stack?.split('\n').slice(0, 5).join('\n'));
         answer = null;
       }
+      logger.info(`[answerQuestion] after synthesizeAnswer, answer is ${answer ? 'TRUTHY' : 'FALSY'}, answerQuestion continuing...`);
 
       // Skip self-reflect gate for now — just use the answer directly
       if (answer && answer.trim()) {
