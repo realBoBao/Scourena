@@ -425,10 +425,12 @@ function formatWebContext(results) {
 function formatSourcesWithScore(results, type = 'web', maxItems = 5) {
   if (!results || results.length === 0) return '';
 
-  // Deduplicate by URL
+  // Deduplicate by URL + YouTube video ID (watch?v= vs shorts/ vs embed/)
   const seen = new Set();
   const deduped = results.filter(r => {
-    const key = r.url || r.title || '';
+    let key = r.url || r.title || '';
+    const ytMatch = key.match(/(?:youtube\.com\/(?:watch\?v=|shorts\/|embed\/)|youtu\.be\/)([\w-]{11})/);
+    if (ytMatch) key = `yt:${ytMatch[1]}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -753,10 +755,13 @@ async function webScout(query) {
   // Sort by score giảm dần
   allResults.sort((a, b) => (b.score || 0) - (a.score || 0));
 
-  // Deduplicate theo URL
+  // Deduplicate theo URL + YouTube video ID
   const seen = new Set();
   const deduped = allResults.filter(r => {
-    const key = r.url || r.title;
+    // YouTube: extract video ID để tránh trùng watch?v= vs shorts/
+    let key = r.url || r.title || '';
+    const ytMatch = key.match(/(?:youtube\.com\/(?:watch\?v=|shorts\/|embed\/)|youtu\.be\/)([\w-]{11})/);
+    if (ytMatch) key = `yt:${ytMatch[1]}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -1063,18 +1068,14 @@ async function synthesizeAnswer(query, context, sourceType, userId = null) {
     } catch { /* mem0 optional */ }
   }
 
-  // ── Prompt Compression (Tier 2): TF-IDF based context compression ──
+  // ── Context Truncation: Giới hạn context để tránh LLM 400 ──
+  // Groq/OpenRouter token limit ~8k, an toàn ở 6000 chars (~1500 tokens)
+  const MAX_CONTEXT_CHARS = 6000;
   let compressedContext = context;
-  try {
-    const { compressPrompt, extractKeywords } = await import('../lib/prompt_compressor.js');
-    if (context.length > 1000) {
-      compressedContext = compressPrompt(context, 0.4); // Giữ 60% nội dung quan trọng
-      if (process.env.DEBUG) {
-        const keywords = extractKeywords(query);
-        console.log(`[RagAgent] Context: ${context.length} → ${compressedContext.length} chars | Keywords: ${keywords.slice(0, 5).join(', ')}`);
-      }
-    }
-  } catch { /* compressor optional, fallback to raw context */ }
+  if (context.length > MAX_CONTEXT_CHARS) {
+    logger.info(`[RagAgent] Context truncated: ${context.length} → ${MAX_CONTEXT_CHARS} chars`);
+    compressedContext = context.slice(0, MAX_CONTEXT_CHARS);
+  }
 
   // ── Prompt Optimization (Tier 1) ──
   let prompt;
