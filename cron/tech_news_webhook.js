@@ -1,14 +1,12 @@
 #!/usr/bin/env node
 /**
- * cron/tech_news_webhook.js — Fetch tech news theo topic random và gửi qua TECH_WEBHOOK_URL
+ * cron/tech_news_webhook.js — Lightweight tech news digest (TẬP CON của Pipeline)
  *
- * Nguồn: HackerNews, Reddit r/programming, GitHub trending
+ * Chỉ fetch HN + Reddit + GitHub + arXiv → gửi Discord
+ * Không scrape sâu, không embed, không tạo flashcard
+ *
  * Usage: node cron/tech_news_webhook.js [topic]
- * Cron: 11AM + 5PM PDT daily (via GitHub Actions)
- *
- * Topic pool — random 4 lần/ngày không trùng:
- * - Nếu có topic argument → dùng topic đó
- * - Nếu không → random từ TECH_TOPICS pool, không trùng với .topic_history.json
+ * Cron: 5x/day PDT (8AM, 11AM, 2PM, 5PM, 8PM)
  */
 
 import 'dotenv/config';
@@ -16,246 +14,182 @@ import fs from 'fs/promises';
 import path from 'path';
 
 const TECH_WEBHOOK = process.env.TECH_WEBHOOK_URL || process.env.DISCORD_WEBHOOK;
+if (!TECH_WEBHOOK) { console.error('❌ TECH_WEBHOOK_URL not set'); process.exit(1); }
 
-// ── Tech topic pool — random không trùng ──
 const TECH_TOPICS = [
-  'artificial intelligence',
-  'machine learning',
-  'distributed systems',
-  'cloud computing',
-  'cybersecurity',
-  'blockchain',
-  'web development',
-  'mobile development',
-  'devops',
-  'data engineering',
-  'microservices',
-  'kubernetes',
-  'rust programming',
-  'golang',
-  'typescript',
-  'python',
-  'react',
-  'vue.js',
-  'node.js',
-  'database optimization',
-  'API design',
-  'system design',
-  'networking',
-  'linux kernel',
-  'open source',
-  'startup tech',
-  'quantum computing',
-  'edge computing',
-  'IoT',
-  'AR VR',
-  'chatbot development',
+  'artificial intelligence', 'machine learning', 'distributed systems',
+  'cloud computing', 'cybersecurity', 'devops', 'microservices',
+  'kubernetes', 'rust programming', 'golang', 'typescript',
+  'python', 'system design', 'database optimization', 'API design',
+  'networking', 'open source', 'edge computing', 'IoT',
 ];
 
-const TOPIC_HISTORY_FILE = path.resolve('./.topic_history.json');
+const TOPIC_HISTORY = path.resolve('./.topic_history.json');
+const CATCHUP_FILE = path.resolve('./.tech_news_catchup.json');
 
-async function loadTopicHistory() {
-  try {
-    const data = await fs.readFile(TOPIC_HISTORY_FILE, 'utf8');
-    const history = JSON.parse(data);
-    const today = new Date().toISOString().slice(0, 10);
-    return history[today] || [];
-  } catch { return []; }
+function loadHistorySync() {
+  try { return JSON.parse(require('fs').readFileSync(TOPIC_HISTORY, 'utf8'))[new Date().toISOString().slice(0, 10)] || []; }
+  catch { return []; }
 }
 
-async function saveTopicHistory(topic) {
+async function saveHistory(topic) {
   try {
-    let history = {};
-    try { history = JSON.parse(await fs.readFile(TOPIC_HISTORY_FILE, 'utf8')); } catch {}
-    const today = new Date().toISOString().slice(0, 10);
-    if (!history[today]) history[today] = [];
-    history[today].push({ topic, ts: new Date().toISOString() });
-    await fs.writeFile(TOPIC_HISTORY_FILE, JSON.stringify(history, null, 2), 'utf8');
+    let d = {}; try { d = JSON.parse(await fs.readFile(TOPIC_HISTORY, 'utf8')); } catch {}
+    const t = new Date().toISOString().slice(0, 10);
+    if (!d[t]) d[t] = [];
+    d[t].push({ topic, ts: new Date().toISOString() });
+    await fs.writeFile(TOPIC_HISTORY, JSON.stringify(d, null, 2), 'utf8');
   } catch { /* ignore */ }
 }
 
-async function pickSmartTopic() {
-  // ── 1. Thử dùng Markov Engine để predict topic user quan tâm ──
-  try {
-    const { getPredictedTopic, initializeMarkovFiles } = await import('../lib/markov_engine.js');
-    await initializeMarkovFiles();
-    const predicted = await getPredictedTopic();
-    if (predicted && TECH_TOPICS.includes(predicted)) {
-      console.log(`[TechNews] Markov predicted topic: "${predicted}"`);
-      return predicted;
-    }
-  } catch (err) {
-    console.debug('[TechNews] Markov prediction failed, using random fallback:', err.message);
-  }
-
-  // ── 2. Fallback: random từ pool, không trùng trong ngày ──
-  const history = await loadTopicHistory();
-  const available = TECH_TOPICS.filter(t => !history.includes(t));
-  if (available.length === 0) {
-    const today = new Date().toISOString().slice(0, 10);
-    await fs.writeFile(TOPIC_HISTORY_FILE, JSON.stringify({ [today]: [] }, null, 2), 'utf8');
-    return TECH_TOPICS[Math.floor(Math.random() * TECH_TOPICS.length)];
-  }
-  return available[Math.floor(Math.random() * available.length)];
-}
-
-if (!TECH_WEBHOOK) {
-  console.error('❌ TECH_WEBHOOK_URL not set in .env');
-  process.exit(1);
-}
-
-// ── Source Router handles all fetching with multi-backend fallback ──
-
-// ── Catch-up tracking file ──
-const CATCHUP_FILE = path.resolve('./.tech_news_catchup.json');
-
-async function wasSentToday(topic) {
-  try {
-    const data = JSON.parse(await fs.readFile(CATCHUP_FILE, 'utf8'));
-    const today = new Date().toISOString().slice(0, 10);
-    return data[today]?.includes(topic);
-  } catch { return false; }
+async function wasSent(topic) {
+  try { return JSON.parse(await fs.readFile(CATCHUP_FILE, 'utf8'))[new Date().toISOString().slice(0, 10)]?.includes(topic); }
+  catch { return false; }
 }
 
 async function markSent(topic) {
   try {
-    let data = {};
-    try { data = JSON.parse(await fs.readFile(CATCHUP_FILE, 'utf8')); } catch {}
-    const today = new Date().toISOString().slice(0, 10);
-    if (!data[today]) data[today] = [];
-    data[today].push(topic);
-    await fs.writeFile(CATCHUP_FILE, JSON.stringify(data, null, 2), 'utf8');
+    let d = {}; try { d = JSON.parse(await fs.readFile(CATCHUP_FILE, 'utf8')); } catch {}
+    const t = new Date().toISOString().slice(0, 10);
+    if (!d[t]) d[t] = [];
+    d[t].push(topic);
+    await fs.writeFile(CATCHUP_FILE, JSON.stringify(d, null, 2), 'utf8');
   } catch { /* ignore */ }
 }
 
-async function main() {
-  // Pick smart topic (Markov prediction → random fallback)
-  const topic = process.argv[2] || await pickSmartTopic();
+function pickTopic() {
+  const history = loadHistorySync();
+  const avail = TECH_TOPICS.filter(t => !history.includes(t));
+  const pool = avail.length ? avail : TECH_TOPICS;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
 
-  // ── Catch-up: Skip if already sent today ──
-  if (await wasSentToday(topic)) {
-    console.log(`[TechNews] Already sent "${topic}" today — skipping (catch-up)`);
+async function fetchHN(query, limit = 10) {
+  try {
+    const r = await fetch(`https://hn.algolia.com/api/v1/search?query=${encodeURIComponent(query)}&tags=story&hitsPerPage=${limit}`);
+    if (!r.ok) return [];
+    const d = await r.json();
+    return (d.hits || []).map(h => ({ title: h.title || 'Untitled', url: h.url || `https://news.ycombinator.com/item?id=${h.objectID}`, pts: h.points || 0 }));
+  } catch { return []; }
+}
+
+async function fetchReddit(query, limit = 10) {
+  try {
+    const r = await fetch(`https://www.reddit.com/search.json?q=${encodeURIComponent(query)}&sort=relevance&t=week&limit=${limit}`, { headers: { 'User-Agent': 'Serena-Brain/1.0' } });
+    if (!r.ok) return [];
+    const d = await r.json();
+    return (d.data?.children || []).filter(c => c.data && !c.data.stickied).map(c => ({ title: c.data.title || 'Untitled', url: `https://reddit.com${c.data.permalink || ''}`, pts: c.data.score || 0 }));
+  } catch { return []; }
+}
+
+async function fetchGitHub(query, limit = 10) {
+  try {
+    const r = await fetch(`https://api.github.com/search/repositories?q=${encodeURIComponent(query)}+created:>2024-01-01&sort=stars&order=desc&per_page=${limit}`);
+    if (!r.ok) return [];
+    const d = await r.json();
+    return (d.items || []).slice(0, limit).map(r => ({ title: r.full_name || 'Untitled', url: r.html_url || '', pts: r.stargazers_count || 0 }));
+  } catch { return []; }
+}
+
+async function fetchArXiv(query, limit = 5) {
+  try {
+    const r = await fetch(`http://export.arxiv.org/api/query?search_query=all:${encodeURIComponent(query)}&start=0&max_results=${limit}`);
+    if (!r.ok) return [];
+    const xml = await r.text();
+    return [...xml.matchAll(/<entry>([\s\S]*?)<\/entry>/g)].map(m => ({
+      title: m[1].match(/<title>([\s\S]*?)<\/title>/)?.[1]?.trim().replace(/\s+/g, ' ') || 'Untitled',
+      url: m[1].match(/<id>([^<]+)<\/id>/)?.[1] || '',
+      pts: 0,
+    }));
+  } catch { return []; }
+}
+
+async function main() {
+  const topic = process.argv[2] || pickTopic();
+
+  if (await wasSent(topic)) {
+    console.log(`[TechNews] Already sent "${topic}" today — skip`);
     return;
   }
 
-  await saveTopicHistory(topic);
+  await saveHistory(topic);
+  console.log(`[TechNews] Fetching: "${topic}"`);
 
-  // Record interaction cho Markov Engine
-  try {
-    const { recordInteraction } = await import('../lib/markov_engine.js');
-    await recordInteraction(topic);
-  } catch { /* non-critical */ }
-
-  console.log(`[TechNews] Fetching tech news for topic: "${topic}"`);
-
-  // ── Multi-source search với Source Router (multi-backend fallback) ──
-  const { searchWithFallback } = await import('../lib/source_router.js');
   const [hn, reddit, github, arxiv] = await Promise.all([
-    searchWithFallback('hackernews', topic),
-    searchWithFallback('reddit', topic),
-    searchWithFallback('github', topic),
-    searchWithFallback('arxiv', topic),
+    fetchHN(topic, 10), fetchReddit(topic, 10), fetchGitHub(topic, 10), fetchArXiv(topic, 5),
   ]);
 
-  // Normalize results to common format with proper scoring
-  const allNews = [
-    ...hn.map(n => ({ ...n, type: 'hackernews', score: Math.min(1.0, (n.score || 0) / 500) })), // HN: 500+ points = max
-    ...reddit.map(n => ({ ...n, type: 'reddit', score: Math.min(1.0, (n.score || 0) / 200) })), // Reddit: 200+ = max
-    ...github.map(n => ({ ...n, type: 'github', score: Math.min(1.0, (n.score || 0) / 1000) })), // GitHub: 1000+ stars = max
-    ...arxiv.map(n => ({ ...n, type: 'arxiv', score: 0.75 })), // arXiv: fixed high quality
+  let all = [
+    ...hn.map(n => ({ ...n, src: 'HN', score: Math.min(1, n.pts / 500) })),
+    ...reddit.map(n => ({ ...n, src: 'Reddit', score: Math.min(1, n.pts / 200) })),
+    ...github.map(n => ({ ...n, src: 'GitHub', score: Math.min(1, n.pts / 1000) })),
+    ...arxiv.map(n => ({ ...n, src: 'arXiv', score: 0.75 })),
   ];
 
-  if (allNews.length === 0) {
-    console.log('[TechNews] No news fetched.');
-    return;
-  }
-
-  allNews.sort((a, b) => b.score - a.score);
-
-  // ── Fallback: Nếu không có news mới → lấy từ DB theo topic ──
-  if (allNews.length === 0) {
-    console.log('[TechNews] No new sources — fetching from DB cache...');
-    try {
-      const { search: vectorSearch } = await import('../lib/vector_store.js');
-      const { embedText } = await import('../lib/embeddings.js');
-      const emb = await embedText(topic);
-      const cached = await vectorSearch(emb, 10, 'academic');
-      if (cached.length > 0) {
-        const cachedNews = cached.map(c => ({
-          title: c.project || c.doc_id || 'Cached Source',
-          url: c.url || '',
-          type: 'cached',
-          score: 0.5,
-          source: 'cache',
-        }));
-        allNews.push(...cachedNews);
-        console.log(`[TechNews] Fallback: ${cachedNews.length} cached sources from DB`);
-      }
-    } catch (cacheErr) {
-      console.warn('[TechNews] DB cache fallback failed:', cacheErr.message);
-    }
-  }
-
-  // ── F1 Quality Gate ──
-  let qualityNews = allNews;
+  // ── Dedup + Fallback via direct SQLite query ──
   try {
-    const { computeF1 } = await import('../lib/f1_evaluator.js');
-    qualityNews = allNews.filter(n => {
-      const f1 = computeF1(n.title, topic);
-      return f1.f1 >= 0.05;
-    });
-    if (qualityNews.length < allNews.length) {
-      console.log(`[TechNews] F1 filter: ${allNews.length} → ${qualityNews.length}`);
+    const { DatabaseSync } = await import('node:sqlite');
+    const db = new DatabaseSync('./vectors.db');
+
+    // Get existing URLs for this topic
+    const rows = db.prepare("SELECT url FROM vectors WHERE chunk_text LIKE ? LIMIT 100").all(`%${topic}%`);
+    const existingUrls = new Set(rows.map(r => r.url).filter(Boolean));
+
+    if (existingUrls.size > 0) {
+      const before = all.length;
+      all = all.filter(n => !existingUrls.has(n.url));
+      if (all.length < before) {
+        console.log(`[TechNews] Dedup: ${before} → ${all.length} (removed ${before - all.length} duplicates)`);
+      }
     }
-  } catch { /* F1 optional */ }
 
-  console.log(`[TechNews] Fetched ${qualityNews.length} quality news items for "${topic}"`);
+    // Fallback: if nothing new, get oldest from DB
+    if (!all.length) {
+      console.log('[TechNews] No new sources — fetching from DB cache...');
+      const cached = db.prepare("SELECT DISTINCT doc_id, url, project FROM vectors WHERE chunk_text LIKE ? ORDER BY added_at ASC LIMIT 10").all(`%${topic}%`);
+      if (cached.length > 0) {
+        all = cached.map(c => ({
+          title: c.project || c.doc_id || 'Cached',
+          url: c.url || '',
+          src: 'cached',
+          score: 0.5,
+          pts: 0,
+        }));
+        console.log(`[TechNews] Fallback: ${all.length} cached sources from DB`);
+      }
+    }
 
-  // Build sources lines with scores
-  const sourcesLines = qualityNews.slice(0, 15).map((n, i) => {
-    const tag = n.type === 'hackernews' ? '[HN]' : n.type === 'reddit' ? '[Reddit]' : n.type === 'arxiv' ? '[arXiv]' : '[GitHub]';
-    const scoreBar = '█'.repeat(Math.min(10, Math.max(0, Math.round(n.score * 10)))) + '░'.repeat(10 - Math.min(10, Math.max(0, Math.round(n.score * 10))));
-    return `**${i + 1}.** ${tag} [${n.title.slice(0, 60)}](${n.url})\n   📊 Score: **${n.score.toFixed(2)}** ${scoreBar}`;
+    db.close();
+  } catch (dbErr) {
+    console.debug('[TechNews] DB dedup/fallback skipped:', dbErr.message);
+  }
+
+  if (!all.length) { console.log('[TechNews] No results at all'); return; }
+  all.sort((a, b) => b.score - a.score);
+
+  const lines = all.slice(0, 15).map((n, i) => {
+    const bar = '█'.repeat(Math.round(n.score * 10)) + '░'.repeat(10 - Math.round(n.score * 10));
+    return `**${i + 1}.** [${n.src}] [${n.title.slice(0, 60)}](${n.url})\n   📊 ${n.score.toFixed(2)} ${bar}`;
   });
 
-  const typeCounts = {};
-  for (const n of qualityNews) typeCounts[n.type] = (typeCounts[n.type] || 0) + 1;
-  const summary = Object.entries(typeCounts).map(([t, c]) => `${t}: ${c}`).join(' | ');
-  const topScore = qualityNews.length > 0 ? qualityNews[0].score.toFixed(3) : '0';
-  const avgScore = qualityNews.length > 0 ? (qualityNews.reduce((s, n) => s + n.score, 0) / qualityNews.length).toFixed(3) : '0';
+  const types = {};
+  for (const n of all) types[n.src] = (types[n.src] || 0) + 1;
 
   const embed = {
     title: `📰 Tech News: "${topic}" — ${new Date().toLocaleDateString('vi-VN')}`,
     description: [
-      `🔍 **Topic:** ${topic}`,
-      `🏆 **Top Score:** ${topScore} | 📊 **Avg Score:** ${avgScore}`,
-      `📦 **Total Sources:** ${qualityNews.length} | 📊 **By Type:** ${summary}`,
-      ``,
-      ...sourcesLines,
+      `📦 **Total:** ${all.length} | 📊 **By Type:** ${Object.entries(types).map(([t, c]) => `${t}: ${c}`).join(' | ')}`,
+      '', ...lines,
     ].join('\n').slice(0, 4000),
     color: 0x00aa55,
     timestamp: new Date().toISOString(),
   };
-  
+
   try {
-    const res = await fetch(TECH_WEBHOOK, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ embeds: [embed] }),
-    });
-    
-    if (res.ok) {
-      console.log('[TechNews] ✅ Webhook sent successfully');
-      await markSent(topic); // Mark as sent for catch-up
-    } else {
-      console.error('[TechNews] ❌ Webhook failed:', res.status, await res.text());
-    }
-  } catch (err) {
-    console.error('[TechNews] ❌ Webhook error:', err.message);
-  }
+    const res = await fetch(TECH_WEBHOOK, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ embeds: [embed] }) });
+    if (res.ok) { console.log(`[TechNews] ✅ Sent ${all.length} items`); await markSent(topic); }
+    else console.error('[TechNews] ❌ Failed:', res.status);
+  } catch (err) { console.error('[TechNews] ❌ Error:', err.message); }
 }
 
-main().catch(err => {
-  console.error('[TechNews] Fatal:', err.message);
-  process.exit(1);
-});
+main().catch(e => { console.error('[TechNews] Fatal:', e.message); process.exit(1); });
