@@ -79,10 +79,29 @@ export async function textToSpeech(text, voice = 'vi-VN-HoaiMyNeural') {
   });
 }
 
+// ── WAV Helper ──
+function createWavHeader(dataLength, sampleRate, channels) {
+  const buffer = Buffer.alloc(44);
+  // RIFF header
+  buffer.write('RIFF', 0);
+  buffer.writeUInt32LE(36 + dataLength, 4);
+  buffer.write('WAVE', 8);
+  // fmt chunk
+  buffer.write('fmt ', 12);
+  buffer.writeUInt32LE(16, 16); // chunk size
+  buffer.writeUInt16LE(1, 20); // PCM
+  buffer.writeUInt16LE(channels, 22);
+  buffer.writeUInt32LE(sampleRate, 24);
+  buffer.writeUInt32LE(sampleRate * channels * 2, 28); // byte rate
+  buffer.writeUInt16LE(channels * 2, 32); // block align
+  buffer.writeUInt16LE(16, 34); // bits per sample
+  // data chunk
+  buffer.write('data', 36);
+  buffer.writeUInt32LE(dataLength, 40);
+  return buffer;
+}
+
 // ── STT: Audio → Text (Groq Whisper) ──
-// ponytail: Opus decode requires @discordjs/voice prism-media decoder
-// FFmpeg cannot decode raw Opus packets from Discord VoiceReceiver
-// TODO: implement proper Opus→PCM→WAV pipeline using prism-media
 export async function speechToText(audioBuffer, language = 'vi') {
   const GROQ_KEY = process.env.GROQ_API_KEY;
   if (!GROQ_KEY) {
@@ -90,25 +109,47 @@ export async function speechToText(audioBuffer, language = 'vi') {
     return null;
   }
 
-  // TEMP: Discord VoiceReceiver sends raw Opus packets, not OGG files
-  // FFmpeg cannot decode these. Need prism-media decoder.
-  // For now, return null to prevent crash.
-  logger.warn('[STT] Opus decode not yet implemented — need prism-media decoder');
-  return null;
-
-  /* TODO: Implement proper Opus→WAV conversion
   const tmpDir = os.tmpdir();
-  const inputPath = path.join(tmpDir, `stt-in-${Date.now()}.opus`);
-  const outputPath = path.join(tmpDir, `stt-out-${Date.now()}.wav`);
-  fs.writeFileSync(inputPath, audioBuffer);
+  const wavPath = path.join(tmpDir, `stt-${Date.now()}.wav`);
 
-  // Use prism-media to decode Opus → PCM, then write WAV
-  // const { OpusDecoder } = require('@discordjs/opus');
-  // ... conversion code ...
+  try {
+    // Decode Opus → PCM → WAV using prism-media
+    const { opus } = await import('prism-media');
+    const decoder = new opus.Decoder({ rate: 16000, channels: 1 });
 
-  const sendBuffer = fs.readFileSync(outputPath);
+    // Write Opus packets to temp file, decode, then write WAV
+    const opusPath = path.join(tmpDir, `stt-in-${Date.now()}.opus`);
+    fs.writeFileSync(opusPath, audioBuffer);
+
+    const pcmBuffer = await new Promise((resolve, reject) => {
+      const chunks = [];
+      const readStream = fs.createReadStream(opusPath);
+      const decoderStream = readStream.pipe(decoder);
+      decoderStream.on('data', chunk => chunks.push(chunk));
+      decoderStream.on('end', () => resolve(Buffer.concat(chunks)));
+      decoderStream.on('error', reject);
+    });
+
+    // Write WAV header + PCM data
+    const wavHeader = createWavHeader(pcmBuffer.length, 16000, 1);
+    const wavBuffer = Buffer.concat([wavHeader, pcmBuffer]);
+    fs.writeFileSync(wavPath, wavBuffer);
+
+    // Cleanup opus temp file
+    try { fs.unlinkSync(opusPath); } catch {}
+
+    logger.info(`[STT] Decoded Opus → WAV: ${wavBuffer.length} bytes`);
+  } catch (decodeErr) {
+    logger.error(`[STT] Opus decode failed: ${decodeErr.message}`);
+    return null;
+  }
+
+  const sendBuffer = fs.readFileSync(wavPath);
   const filename = 'audio.wav';
   const contentType = 'audio/wav';
+
+  // Cleanup temp file
+  try { fs.unlinkSync(wavPath); } catch {}
 
   const models = ['whisper-large-v3-turbo', 'whisper-large-v3'];
   for (const model of models) {
