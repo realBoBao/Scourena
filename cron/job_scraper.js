@@ -126,21 +126,35 @@ async function main() {
     console.log(`[JobScraper] Filtered: ${rawJobs.length} → ${filteredJobs.length} (removed ${rawJobs.length - filteredJobs.length} irrelevant)`);
   }
 
-  // ── Dedup: Loại bỏ URLs đã gửi trong 7 ngày (SQLite) ──
+  // ── Dedup: Loại bỏ URLs đã gửi gần đây (check Discord history) ──
   let dedupedJobs = filteredJobs;
   try {
-    const { DatabaseSync } = await import('node:sqlite');
-    const db = new DatabaseSync('./vectors.db');
-    db.exec('CREATE TABLE IF NOT EXISTS sent_jobs (url TEXT PRIMARY KEY, sent_at TEXT)');
-    const sent = db.prepare("SELECT url FROM sent_jobs WHERE sent_at > datetime('now', '-7 days')").all();
-    const sentUrls = new Set(sent.map(r => r.url));
-    dedupedJobs = filteredJobs.filter(j => !sentUrls.has(j.link || ''));
-    if (dedupedJobs.length < filteredJobs.length) {
-      console.log(`[JobScraper] Dedup: ${filteredJobs.length} → ${dedupedJobs.length} (removed ${filteredJobs.length - dedupedJobs.length} already sent)`);
+    // Extract channel ID from webhook URL
+    const webhookMatch = JOB_WEBHOOK.match(/webhooks\/(\d+)\//);
+    if (webhookMatch) {
+      const channelId = webhookMatch[1];
+      // Fetch last 50 messages from the webhook channel
+      const histRes = await fetch(`https://discord.com/api/v10/channels/${channelId}/messages?limit=50`, {
+        headers: { 'Authorization': `Bot ${process.env.DISCORD_BOT_TOKEN}` },
+      });
+      if (histRes.ok) {
+        const messages = await histRes.json();
+        const sentUrls = new Set();
+        for (const msg of messages) {
+          if (msg.embeds?.[0]?.description) {
+            // Extract all URLs from embed description
+            const urlMatches = msg.embeds[0].description.match(/https?:\/\/[^\s\)]+/g);
+            if (urlMatches) urlMatches.forEach(u => sentUrls.add(u));
+          }
+        }
+        dedupedJobs = filteredJobs.filter(j => !sentUrls.has(j.link || ''));
+        if (dedupedJobs.length < filteredJobs.length) {
+          console.log(`[JobScraper] Dedup: ${filteredJobs.length} → ${dedupedJobs.length} (removed already sent)`);
+        }
+      }
     }
-    db.close();
-  } catch (dbErr) {
-    console.debug('[JobScraper] SQLite dedup skipped:', dbErr.message);
+  } catch (dedupErr) {
+    console.debug('[JobScraper] Discord dedup skipped:', dedupErr.message);
   }
 
   if (dedupedJobs.length === 0) {

@@ -43,8 +43,33 @@ async function saveHistory(topic) {
 }
 
 async function wasSent(topic) {
-  try { return JSON.parse(await fs.readFile(CATCHUP_FILE, 'utf8'))[new Date().toISOString().slice(0, 10)]?.includes(topic); }
-  catch { return false; }
+  // Check local file first (works on persistent servers)
+  try {
+    const local = JSON.parse(await fs.readFile(CATCHUP_FILE, 'utf8'));
+    if (local[new Date().toISOString().slice(0, 10)]?.includes(topic)) return true;
+  } catch { /* ignore */ }
+
+  // Check Discord channel history (works on GitHub Actions / ephemeral VMs)
+  try {
+    const webhookMatch = TECH_WEBHOOK.match(/webhooks\/(\d+)\//);
+    if (webhookMatch) {
+      const channelId = webhookMatch[1];
+      const histRes = await fetch(`https://discord.com/api/v10/channels/${channelId}/messages?limit=20`, {
+        headers: { 'Authorization': `Bot ${process.env.DISCORD_BOT_TOKEN}` },
+      });
+      if (histRes.ok) {
+        const messages = await histRes.json();
+        const today = new Date().toISOString().slice(0, 10);
+        for (const msg of messages) {
+          if (msg.embeds?.[0]?.title?.includes(topic) && msg.timestamp?.startsWith(today)) {
+            return true;
+          }
+        }
+      }
+    }
+  } catch { /* ignore */ }
+
+  return false;
 }
 
 async function markSent(topic) {
