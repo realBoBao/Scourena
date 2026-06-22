@@ -88,10 +88,38 @@ export async function speechToText(audioBuffer, language = 'vi') {
     return null;
   }
 
-  // Write audio to temp file
   const tmpDir = os.tmpdir();
-  const audioPath = path.join(tmpDir, `stt-${Date.now()}.ogg`);
-  fs.writeFileSync(audioPath, audioBuffer);
+
+  // Convert Opus/OGG → WAV using FFmpeg (Groq Whisper needs WAV/MP3, not raw Opus)
+  const inputPath = path.join(tmpDir, `stt-in-${Date.now()}.ogg`);
+  const outputPath = path.join(tmpDir, `stt-out-${Date.now()}.wav`);
+  fs.writeFileSync(inputPath, audioBuffer);
+
+  try {
+    await new Promise((resolve, reject) => {
+      const ffmpeg = spawn('ffmpeg', ['-y', '-i', inputPath, '-ar', '16000', '-ac', '1', '-f', 'wav', outputPath], { stdio: 'pipe' });
+      let stderr = '';
+      ffmpeg.stderr.on('data', d => { stderr += d.toString(); });
+      ffmpeg.on('close', code => {
+        if (code === 0) resolve();
+        else reject(new Error(`FFmpeg exit ${code}: ${stderr.slice(0, 200)}`));
+      });
+      ffmpeg.on('error', err => reject(new Error(`FFmpeg spawn: ${err.message}`)));
+    });
+  } catch (ffmpegErr) {
+    logger.error(`[STT] FFmpeg convert failed: ${ffmpegErr.message}`);
+    // Fallback: try sending original OGG anyway
+  }
+
+  // Use WAV if conversion succeeded, otherwise fallback to original
+  const sendPath = fs.existsSync(outputPath) ? outputPath : inputPath;
+  const sendBuffer = fs.readFileSync(sendPath);
+  const filename = sendPath.endsWith('.wav') ? 'audio.wav' : 'audio.ogg';
+  const contentType = sendPath.endsWith('.wav') ? 'audio/wav' : 'audio/ogg';
+
+  // Cleanup temp files
+  try { fs.unlinkSync(inputPath); } catch {}
+  try { fs.unlinkSync(outputPath); } catch {}
 
   // Thử lần lượt các Whisper models
   const models = ['whisper-large-v3-turbo', 'whisper-large-v3'];
@@ -99,9 +127,9 @@ export async function speechToText(audioBuffer, language = 'vi') {
   for (const model of models) {
     try {
       const boundary = '----FormBoundary' + Date.now();
-      const header = Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="audio.ogg"\r\nContent-Type: audio/ogg\r\n\r\n`);
+      const header = Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: ${contentType}\r\n\r\n`);
       const footer = Buffer.from(`\r\n--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\n${model}\r\n--${boundary}\r\nContent-Disposition: form-data; name="language"\r\n\r\n${language}\r\n--${boundary}--\r\n`);
-      const body = Buffer.concat([header, audioBuffer, footer]);
+      const body = Buffer.concat([header, sendBuffer, footer]);
 
       const res = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
         method: 'POST',
