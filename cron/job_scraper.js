@@ -88,6 +88,76 @@ async function fetchRemoteOK(limit = 10) {
   }
 }
 
+async function fetchHackerNewsHiring(limit = 15) {
+  try {
+    // Tìm thread "Ask HN: Who is hiring?" tháng hiện tại
+    const searchRes = await fetch(
+      'https://hn.algolia.com/api/v1/search?query=Ask+HN+Who+is+hiring&tags=ask_hn&hitsPerPage=1'
+    );
+    if (!searchRes.ok) throw new Error(`HN search ${searchRes.status}`);
+    const search = await searchRes.json();
+    const threadId = search.hits[0]?.objectID;
+    if (!threadId) return [];
+
+    // Lấy thread info
+    const threadRes = await fetch(`https://hacker-news.firebaseio.com/v0/item/${threadId}.json`);
+    if (!threadRes.ok) throw new Error(`HN thread ${threadRes.status}`);
+    const thread = await threadRes.json();
+
+    // Lấy comments (mỗi comment = 1 job posting)
+    const commentIds = (thread.kids || []).slice(0, limit * 2); // lấy nhiều hơn để filter
+    const comments = await Promise.all(
+      commentIds.map(id =>
+        fetch(`https://hacker-news.firebaseio.com/v0/item/${id}.json`).then(r => r.json())
+      )
+    );
+
+    const techKeywords = ['backend', 'node', 'devops', 'fullstack', 'software engineer', 'swe', 'api', 'distributed', 'microservices', 'cloud', 'infrastructure', 'javascript', 'typescript', 'python', 'kubernetes', 'docker'];
+    return comments
+      .filter(c => c?.text && !c.deleted && !c.dead)
+      .map(c => {
+        const text = c.text;
+        const cleanText = text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+        const lines = cleanText.split('\n').filter(Boolean);
+        const firstLine = lines[0] || '';
+
+        // Parse pipe-delimited format: "Company | Role | Location | URL | ..."
+        const parts = firstLine.split('|').map(p => p.trim());
+        const company = parts[0]?.slice(0, 50) || 'HN Company';
+        const role = parts[1] || firstLine.slice(0, 80);
+        const location = parts[2] || 'Remote';
+
+        // Extract URL từ href hoặc từ pipe part
+        const hrefMatch = text.match(/href="([^"]+)"/);
+        let url = hrefMatch ? hrefMatch[1] : `https://news.ycombinator.com/item?id=${c.id}`;
+        // Decode HTML entities in URL
+        url = url.replace(/&#x2F;/g, '/').replace(/&amp;/g, '&');
+        // If URL looks like a domain in pipe parts, use it
+        if (!hrefMatch && parts[3] && parts[3].includes('http')) {
+          url = parts[3];
+        }
+
+        return {
+          company,
+          role,
+          title: role,
+          location,
+          link: url,
+          source: 'HackerNews',
+          description: cleanText.slice(0, 200),
+        };
+      })
+      .filter(j => {
+        const text = (j.title + ' ' + j.company + ' ' + j.description).toLowerCase();
+        return techKeywords.some(k => text.includes(k));
+      })
+      .slice(0, limit);
+  } catch (err) {
+    console.warn('[JobScraper] HackerNews failed:', err.message);
+    return [];
+  }
+}
+
 async function fetchWeWorkRemotely(limit = 10) {
   try {
     const res = await fetch('https://weworkremotely.com/remote-jobs.rss', {
@@ -119,9 +189,10 @@ async function fetchWeWorkRemotely(limit = 10) {
 async function main() {
   console.log('[JobScraper] Fetching job postings...');
 
-  const [simplify, newgrad, remoteok, wework] = await Promise.all([
+  const [simplify, newgrad, hn, remoteok, wework] = await Promise.all([
     fetchSimplifyJobs(10),
     fetchNewGradPositions(10),
+    fetchHackerNewsHiring(15),
     fetchRemoteOK(10),
     fetchWeWorkRemotely(10),
   ]);
@@ -153,7 +224,7 @@ async function main() {
     return hasRequired && !hasExcluded;
   }
 
-  const rawJobs = [...simplify, ...newgrad, ...remoteok, ...wework];
+  const rawJobs = [...simplify, ...newgrad, ...hn, ...remoteok, ...wework];
   const filteredJobs = rawJobs.filter(j => isRelevant(j.title, j.company, j.role));
 
   if (filteredJobs.length < rawJobs.length) {
