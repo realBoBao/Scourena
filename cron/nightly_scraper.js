@@ -14,6 +14,7 @@ import 'dotenv/config';
 import { getLogger } from '../lib/logger.js';
 import { embedText } from '../lib/embeddings.js';
 import { upsertDocument } from '../lib/vector_store.js';
+import { fetchJson } from '../lib/smart_fetcher.js';
 
 const logger = getLogger('NightlyScraper');
 
@@ -28,12 +29,9 @@ async function scrapeGitHub(topic = 'trending') {
   const results = [];
   try {
     const url = `https://api.github.com/search/repositories?q=${encodeURIComponent(topic)}+stars:>1000&sort=stars&order=desc&per_page=${MAX_RESULTS_PER_SOURCE}`;
-    const res = await fetch(url, {
-      headers: { 'Accept': 'application/vnd.github.v3+json' },
-    });
-    if (!res.ok) throw new Error(`GitHub API ${res.status}`);
-    const data = await res.json();
-    for (const item of (data.items || [])) {
+    const data = await fetchJson(url, { headers: { 'Accept': 'application/vnd.github.v3+json' } });
+    if (!data || !data.items) return results;
+    for (const item of data.items) {
       results.push({
         source: 'github',
         title: item.full_name,
