@@ -2,11 +2,14 @@
  * cron/algo_webhook.js — Daily Algorithm Problem từ LeetCode
  * Stateless: gửi đáp án ngay trong Spoiler, không cần DB
  * Catch-up: nếu đã gửi hôm nay thì skip
+ *
+ * Smart fetch: retry + rate-limit cho LeetCode GraphQL API
  */
 
 import 'dotenv/config';
 import fs from 'fs/promises';
 import path from 'path';
+import { fetchJson } from '../lib/smart_fetcher.js';
 
 const ALGO_WEBHOOK_URL = process.env.ALGO_WEBHOOK_URL || '';
 const CATCHUP_FILE = path.resolve('./.algo_catchup.json');
@@ -63,7 +66,8 @@ async function fetchLeetCodeProblemByDifficulty(difficulty) {
   const seed = new Date().toISOString().slice(0, 10).replace(/-/g, '');
   const skip = parseInt(seed) % 100;
 
-  const res = await fetch('https://leetcode.com/graphql', {
+  // Dùng fetchJson với retry (POST request)
+  const data = await fetchJson('https://leetcode.com/graphql', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -77,8 +81,7 @@ async function fetchLeetCodeProblemByDifficulty(difficulty) {
     }),
   });
 
-  const data = await res.json();
-  return data.data?.problemsetQuestionList?.questions?.[0];
+  return data?.data?.problemsetQuestionList?.questions?.[0];
 }
 
 // Lấy random problem (fallback)

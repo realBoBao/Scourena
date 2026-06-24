@@ -2,14 +2,15 @@
 /**
  * cron/tech_news_webhook.js — Lightweight tech news digest (TẬP CON của Pipeline)
  *
- * Chỉ fetch HN + Reddit + GitHub + arXiv → gửi Discord
- * Không scrape sâu, không embed, không tạo flashcard
+ * Nguồn: HN + Reddit + GitHub + arXiv → gửi Discord
+ * Smart fetch: retry + rate-limit + fallback
  *
  * Usage: node cron/tech_news_webhook.js [topic]
  * Cron: 5x/day PDT (8AM, 11AM, 2PM, 5PM, 8PM)
  */
 
 import 'dotenv/config';
+import { fetchJson, fetchText } from '../lib/smart_fetcher.js';
 
 const TECH_WEBHOOK = process.env.TECH_WEBHOOK_URL || process.env.DISCORD_WEBHOOK;
 if (!TECH_WEBHOOK) { console.error('❌ TECH_WEBHOOK_URL not set'); process.exit(1); }
@@ -60,91 +61,45 @@ function recordSentTopic(topic, urls) {
   saveSentHistory(history);
 }
 
-// ── Crawlee scraper (shared instance, MemoryStorage only) ──
-async function getCrawler() {
-  const { CheerioCrawler, Configuration, MemoryStorage } = await import('crawlee');
-  const config = new Configuration({
-    storageClient: new MemoryStorage(),
-    purgeOnStart: true,
-  });
-  return new CheerioCrawler({
-    maxConcurrency: 5,
-    maxRequestRetries: 3,
-    requestHandlerTimeoutSecs: 30,
-    preNavigationHooks: [
-      ({ request }) => {
-        request.headers = {
-          ...request.headers,
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-          'Accept-Language': 'en-US,en;q=0.9',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        };
-      },
-    ],
-  }, config);
-}
+// ── Smart fetcher (retry + rate-limit + fallback) ──
+// Uses fetchJson for APIs, fetchText for HTML/XML
 
 async function fetchHN(query, limit = 10) {
-  try {
-    // HN Algolia API — dùng fetch cho nhanh (JSON endpoint)
-    const r = await fetch(`https://hn.algolia.com/api/v1/search?query=${encodeURIComponent(query)}&tags=story&hitsPerPage=${limit}`);
-    if (!r.ok) return [];
-    const d = await r.json();
-    return (d.hits || []).map(h => ({ title: h.title || 'Untitled', url: h.url || `https://news.ycombinator.com/item?id=${h.objectID}`, pts: h.points || 0 }));
-  } catch { return []; }
+  // HN Algolia API — JSON endpoint, dùng fetchJson với retry
+  const d = await fetchJson(`https://hn.algolia.com/api/v1/search?query=${encodeURIComponent(query)}&tags=story&hitsPerPage=${limit}`);
+  if (!d) return [];
+  return (d.hits || []).map(h => ({ title: h.title || 'Untitled', url: h.url || `https://news.ycombinator.com/item?id=${h.objectID}`, pts: h.points || 0 }));
 }
 
 async function fetchReddit(query, limit = 10) {
-  try {
-    // Reddit JSON API — dùng Crawlee để có retry + rate-limit
-    const crawler = await getCrawler();
-    const results = [];
-
-    crawler.requestHandler = async ({ $, request, body }) => {
-      try {
-        const json = typeof body === 'string' ? JSON.parse(body) : body;
-        const children = json?.data?.children || [];
-        for (const c of children) {
-          if (c.data && !c.data.stickied) {
-            results.push({
-              title: c.data.title || 'Untitled',
-              url: `https://reddit.com${c.data.permalink || ''}`,
-              pts: c.data.score || 0,
-            });
-          }
-        }
-      } catch { /* skip */ }
-    };
-
-    await crawler.run([`https://www.reddit.com/search.json?q=${encodeURIComponent(query)}&sort=relevance&t=week&limit=${limit}`]);
-    return results.slice(0, limit);
-  } catch { return []; }
+  // Reddit JSON API — dùng fetchJson với retry
+  const d = await fetchJson(`https://www.reddit.com/search.json?q=${encodeURIComponent(query)}&sort=relevance&t=week&limit=${limit}`);
+  if (!d || !d.data?.children) return [];
+  return d.data.children
+    .filter(c => c.data && !c.data.stickied)
+    .map(c => ({ title: c.data.title || 'Untitled', url: `https://reddit.com${c.data.permalink || ''}`, pts: c.data.score || 0 }))
+    .slice(0, limit);
 }
 
 async function fetchGitHub(query, limit = 10) {
-  try {
-    // GitHub API — fetch là đủ (JSON, có rate-limit header rõ ràng)
-    const r = await fetch(`https://api.github.com/search/repositories?q=${encodeURIComponent(query)}+created:>2024-01-01&sort=stars&order=desc&per_page=${limit}`, {
-      headers: { 'User-Agent': 'Serena-Brain/1.0', 'Accept': 'application/vnd.github.v3+json' },
-    });
-    if (!r.ok) return [];
-    const d = await r.json();
-    return (d.items || []).slice(0, limit).map(r => ({ title: r.full_name || 'Untitled', url: r.html_url || '', pts: r.stargazers_count || 0 }));
-  } catch { return []; }
+  // GitHub API — JSON endpoint, dùng fetchJson với retry
+  const d = await fetchJson(
+    `https://api.github.com/search/repositories?q=${encodeURIComponent(query)}+created:>2024-01-01&sort=stars&order=desc&per_page=${limit}`,
+    { headers: { 'Accept': 'application/vnd.github.v3+json' } }
+  );
+  if (!d || !d.items) return [];
+  return d.items.slice(0, limit).map(r => ({ title: r.full_name || 'Untitled', url: r.html_url || '', pts: r.stargazers_count || 0 }));
 }
 
 async function fetchArXiv(query, limit = 5) {
-  try {
-    // ArXiv API — fetch là đủ (XML đơn giản)
-    const r = await fetch(`http://export.arxiv.org/api/query?search_query=all:${encodeURIComponent(query)}&start=0&max_results=${limit}`);
-    if (!r.ok) return [];
-    const xml = await r.text();
-    return [...xml.matchAll(/<entry>([\s\S]*?)<\/entry>/g)].map(m => ({
-      title: m[1].match(/<title>([\s\S]*?)<\/title>/)?.[1]?.trim().replace(/\s+/g, ' ') || 'Untitled',
-      url: m[1].match(/<id>([^<]+)<\/id>/)?.[1] || '',
-      pts: 0,
-    }));
-  } catch { return []; }
+  // ArXiv API — XML endpoint, dùng fetchText với retry
+  const xml = await fetchText(`http://export.arxiv.org/api/query?search_query=all:${encodeURIComponent(query)}&start=0&max_results=${limit}`);
+  if (!xml) return [];
+  return [...xml.matchAll(/<entry>([\s\S]*?)<\/entry>/g)].map(m => ({
+    title: m[1].match(/<title>([\s\S]*?)<\/title>/)?.[1]?.trim().replace(/\s+/g, ' ') || 'Untitled',
+    url: m[1].match(/<id>([^<]+)<\/id>/)?.[1] || '',
+    pts: 0,
+  }));
 }
 
 function pickRandomTopic() {

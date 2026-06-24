@@ -2,12 +2,15 @@
 /**
  * cron/job_scraper.js — Scrape job postings và gửi qua JOB_WEBHOOK_URL
  *
- * Nguồn: SimplifyJobs (GitHub), RemoteOK, WeWorkRemotely
+ * Nguồn: SimplifyJobs (GitHub), NewGradPositions, HackerNews, RemoteOK, WeWorkRemotely, LinkedIn, Indeed
  * Usage: node cron/job_scraper.js
  * Cron: 6AM + 12PM + 6PM PDT daily (via GitHub Actions)
+ *
+ * Smart fetch: retry + rate-limit + fallback
  */
 
 import 'dotenv/config';
+import { fetchJson, fetchText, crawlHtml } from '../lib/smart_fetcher.js';
 
 const JOB_WEBHOOK = process.env.JOB_WEBHOOK_URL || process.env.DISCORD_WEBHOOK;
 
@@ -130,9 +133,7 @@ async function fetchHackerNewsHiring(limit = 15) {
         // Extract URL từ href hoặc từ pipe part
         const hrefMatch = text.match(/href="([^"]+)"/);
         let url = hrefMatch ? hrefMatch[1] : `https://news.ycombinator.com/item?id=${c.id}`;
-        // Decode HTML entities in URL
         url = url.replace(/&#x2F;/g, '/').replace(/&amp;/g, '&');
-        // If URL looks like a domain in pipe parts, use it
         if (!hrefMatch && parts[3] && parts[3].includes('http')) {
           url = parts[3];
         }
@@ -158,43 +159,168 @@ async function fetchHackerNewsHiring(limit = 15) {
   }
 }
 
-async function fetchWeWorkRemotely(limit = 10) {
+// ── Crawlee-powered fetch for HTML-heavy sites ────────────
+async function fetchWithCrawlee(url, extractFn, limit = 10) {
   try {
-    const res = await fetch('https://weworkremotely.com/remote-jobs.rss', {
-      headers: { 'User-Agent': 'Serena-Brain/1.0' },
-    });
-    if (!res.ok) throw new Error(`WeWorkRemotely ${res.status}`);
-    const xml = await res.text();
-    const items = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/g)];
-    return items.slice(0, limit).map(m => {
-      const item = m[1];
-      const title = item.match(/<title>([\s\S]*?)<\/title>/)?.[1]?.trim() || 'Unknown';
-      const link = item.match(/<link>([\s\S]*?)<\/link>/)?.[1]?.trim() || '#';
-      const desc = item.match(/<description>([\s\S]*?)<\/description>/)?.[1]?.replace(/<[^>]+>/g, '').slice(0, 100) || '';
-      return {
-        company: title.split('—')[0]?.split('-')[0]?.trim() || 'Unknown',
-        role: title,
-        location: 'Remote',
-        link,
-        source: 'WeWorkRemotely',
-        description: desc,
-      };
-    });
+    const { CheerioCrawler, Configuration, MemoryStorage } = await import('crawlee');
+    const config = new Configuration({ storageClient: new MemoryStorage(), purgeOnStart: true });
+    const results = [];
+
+    const crawler = new CheerioCrawler({
+      maxConcurrency: 3,
+      maxRequestRetries: 2,
+      requestHandlerTimeoutSecs: 20,
+      preNavigationHooks: [
+        ({ request }) => {
+          request.headers = {
+            ...request.headers,
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
+          };
+        },
+      ],
+    }, config);
+
+    crawler.requestHandler = async ({ $, request }) => {
+      try {
+        const result = extractFn($, request.url);
+        if (result) results.push(result);
+      } catch { /* skip bad items */ }
+    };
+
+    await crawler.run([url]);
+    return results.slice(0, limit);
   } catch (err) {
-    console.warn('[JobScraper] WeWorkRemotely failed:', err.message);
+    console.warn(`[JobScraper] Crawlee fetch failed for ${url}:`, err.message);
     return [];
   }
+}
+
+async function fetchWeWorkRemotely(limit = 10) {
+  // Use Crawlee for HTML parsing (more robust than regex)
+  const extractFn = ($, url) => {
+    const title = $('title').text().trim() || 'Unknown';
+    const description = $('description').text().replace(/<[^>]+>/g, '').slice(0, 200) || '';
+    const link = $('link').text().trim() || url;
+    return {
+      company: title.split('—')[0]?.split('-')[0]?.trim() || 'Unknown',
+      role: title,
+      location: 'Remote',
+      link,
+      source: 'WeWorkRemotely',
+      description,
+    };
+  };
+
+  const rssResults = await fetchWithCrawlee(
+    'https://weworkremotely.com/remote-jobs.rss',
+    extractFn,
+    limit
+  );
+
+  // Fallback to simple fetch if Crawlee fails
+  if (rssResults.length === 0) {
+    try {
+      const res = await fetch('https://weworkremotely.com/remote-jobs.rss', {
+        headers: { 'User-Agent': 'Serena-Brain/1.0' },
+      });
+      if (!res.ok) throw new Error(`WeWorkRemotely ${res.status}`);
+      const xml = await res.text();
+      const items = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/g)];
+      return items.slice(0, limit).map(m => {
+        const item = m[1];
+        const title = item.match(/<title>([\s\S]*?)<\/title>/)?.[1]?.trim() || 'Unknown';
+        const link = item.match(/<link>([\s\S]*?)<\/link>/)?.[1]?.trim() || '#';
+        const desc = item.match(/<description>([\s\S]*?)<\/description>/)?.[1]?.replace(/<[^>]+>/g, '').slice(0, 100) || '';
+        return {
+          company: title.split('—')[0]?.split('-')[0]?.trim() || 'Unknown',
+          role: title,
+          location: 'Remote',
+          link,
+          source: 'WeWorkRemotely',
+          description: desc,
+        };
+      });
+    } catch (err) {
+      console.warn('[JobScraper] WeWorkRemotely fallback failed:', err.message);
+      return [];
+    }
+  }
+
+  return rssResults;
+}
+
+// ── LinkedIn Jobs (Crawlee) ───────────────────────────────
+async function fetchLinkedInJobs(limit = 10) {
+  // LinkedIn public jobs page (no login required for basic listings)
+  const extractFn = ($, url) => {
+    // LinkedIn job cards
+    const cards = $('div.job-card-container, div.base-card, [data-job-id]');
+    return cards.map((i, el) => {
+      const $el = $(el);
+      const title = $el.find('a.job-card-list__title, h3.base-search-card__title').text().trim() || 'Unknown';
+      const company = $el.find('h4.base-search-card__subtitle, a.hidden-nested-link').text().trim() || 'Unknown';
+      const location = $el.find('span.job-card-container__metadata-item, span.base-search-card__metadata').first().text().trim() || 'Remote';
+      const link = $el.find('a.base-card__full-link, a.job-card-list__title-link').attr('href') || url;
+      return {
+        company,
+        role: title,
+        title,
+        location,
+        link: link.startsWith('http') ? link : `https://www.linkedin.com${link}`,
+        source: 'LinkedIn',
+        description: $el.find('p.job-card-list__snippet').text().slice(0, 100) || '',
+      };
+    }).get();
+  };
+
+  return fetchWithCrawlee(
+    'https://www.linkedin.com/jobs/search/?keywords=software%20engineer%20remote',
+    extractFn,
+    limit
+  );
+}
+
+// ── Indeed Jobs (Crawlee) ─────────────────────────────────
+async function fetchIndeedJobs(limit = 10) {
+  const extractFn = ($, url) => {
+    const cards = $('div.job_seen_beacon, div.jobsearch-SerpJobCard, [data-jk]');
+    return cards.map((i, el) => {
+      const $el = $(el);
+      const title = $el.find('h2.jobTitle a, h2.jobTitle span').text().trim() || 'Unknown';
+      const company = $el.find('span[data-testid="company-name"], span.companyName').text().trim() || 'Unknown';
+      const location = $el.find('div[data-testid="text-location"], div.companyLocation').text().trim() || 'Remote';
+      const link = $el.find('h2.jobTitle a').attr('href') || '';
+      return {
+        company,
+        role: title,
+        title,
+        location,
+        link: link.startsWith('http') ? link : `https://www.indeed.com${link}`,
+        source: 'Indeed',
+        description: $el.find('div.job-snippet').text().slice(0, 100) || '',
+      };
+    }).get();
+  };
+
+  return fetchWithCrawlee(
+    'https://www.indeed.com/jobs?q=software+engineer+remote',
+    extractFn,
+    limit
+  );
 }
 
 async function main() {
   console.log('[JobScraper] Fetching job postings...');
 
-  const [simplify, newgrad, hn, remoteok, wework] = await Promise.all([
+  const [simplify, newgrad, hn, remoteok, wework, linkedin, indeed] = await Promise.all([
     fetchSimplifyJobs(10),
     fetchNewGradPositions(10),
     fetchHackerNewsHiring(15),
     fetchRemoteOK(10),
     fetchWeWorkRemotely(10),
+    fetchLinkedInJobs(10),
+    fetchIndeedJobs(10),
   ]);
 
   // ── Filter: Chỉ giữ jobs phù hợp với tech profile ──
@@ -224,7 +350,7 @@ async function main() {
     return hasRequired && !hasExcluded;
   }
 
-  const rawJobs = [...simplify, ...newgrad, ...hn, ...remoteok, ...wework];
+  const rawJobs = [...simplify, ...newgrad, ...hn, ...remoteok, ...wework, ...linkedin, ...indeed];
   const filteredJobs = rawJobs.filter(j => isRelevant(j.title, j.company, j.role));
 
   if (filteredJobs.length < rawJobs.length) {
