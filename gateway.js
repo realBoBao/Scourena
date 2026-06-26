@@ -384,7 +384,14 @@ async function main() {
   startHealthCheck();
 
   logInfo('Gateway', 'starting services', { count: SERVICES.length });
-  for (const svc of SERVICES) startService(svc);
+  // Staggered startup: delay 5s between each service to avoid OOM
+  const delay = ms => new Promise(res => setTimeout(res, ms));
+  (async () => {
+    for (const svc of SERVICES) {
+      startService(svc);
+      await delay(5000);
+    }
+  })();
 
   // Start outbox worker for guaranteed message delivery
   startOutboxWorker();

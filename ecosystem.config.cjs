@@ -26,6 +26,7 @@ module.exports = {
       env: {
         NODE_ENV: "production",
         WEBHOOK_BOT_PORT: "3007",
+        NODE_OPTIONS: "--max-old-space-size=384",
       },
     },
     {
