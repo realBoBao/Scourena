@@ -222,37 +222,11 @@ async function fetchWeWorkRemotely(limit = 10) {
   }
 }
 
-// ── Indeed (RSS feed, no Crawlee) ────────────────────────
+// ── Indeed: Bỏ (block hoàn toàn trên VPS)
+// ponytail: Indeed RSS bị VPS block (403/429), cần Publisher API key
+// Upgrade: set INDEED_PUBLISHER_KEY trong .env nếu muốn dùng Indeed API
 async function fetchIndeedJobs(limit = 10) {
-  try {
-    // Indeed RSS — public, no auth, no scraping needed
-    const res = await fetch(`https://rss.indeed.com/rss?q=software+engineer+remote`, {
-      headers: { 'User-Agent': 'Serena-Brain/1.0' },
-    });
-    if (!res.ok) throw new Error(`Indeed RSS ${res.status}`);
-    const xml = await res.text();
-    const items = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/g)];
-    return items.slice(0, limit).map(m => {
-      const item = m[1];
-      const title = item.match(/<title>([\s\S]*?)<\/title>/)?.[1]?.trim() || 'Unknown';
-      const link = item.match(/<link>([\s\S]*?)<\/link>/)?.[1]?.trim() || '#';
-      const desc = item.match(/<description>([\s\S]*?)<\/description>/)?.[1]?.replace(/<[^>]+>/g, '').slice(0, 150) || '';
-      // Parse "Company — Role" format
-      const parts = title.split(/[—\-]/).map(s => s.trim());
-      return {
-        company: parts[1] || parts[0]?.split(/\s+/).slice(0, 3).join(' ') || 'Unknown',
-        role: parts[0] || title,
-        title,
-        location: 'Remote',
-        link,
-        source: 'Indeed',
-        description: desc,
-      };
-    });
-  } catch (err) {
-    console.warn('[JobScraper] Indeed RSS failed:', err.message);
-    return [];
-  }
+  return [];
 }
 
 async function main() {
