@@ -191,6 +191,41 @@ function startHealthCheck() {
       return;
     }
 
+    // ── Force run cron jobs (manual trigger) ──
+    if (req.url === '/run' && req.method === 'POST') {
+      const body = await readBody(req);
+      const job = body.job || 'all';
+      const results = {};
+      const log = (msg) => { console.log('[ForceRun]', msg); };
+
+      try {
+        if (job === 'all' || job === 'tech') {
+          log('Running tech news...');
+          const { execSync } = await import('child_process');
+          const out = execSync('node cron/tech_news_webhook.js', { encoding: 'utf8', timeout: 60000 });
+          results.tech = out.trim().split('\n').slice(-3).join(' | ');
+        }
+        if (job === 'all' || job === 'job') {
+          log('Running job scraper...');
+          const { execSync } = await import('child_process');
+          const out = execSync('node cron/job_scraper.js', { encoding: 'utf8', timeout: 120000 });
+          results.job = out.trim().split('\n').slice(-3).join(' | ');
+        }
+        if (job === 'all' || job === 'algo') {
+          log('Running algo webhook...');
+          const { execSync } = await import('child_process');
+          const out = execSync('node cron/algo_webhook.js', { encoding: 'utf8', timeout: 60000 });
+          results.algo = out.trim().split('\n').slice(-3).join(' | ');
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, job, results }, null, 2));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: err.message }));
+      }
+      return;
+    }
+
     // ── Webhook: Pipeline completion ──
     if (req.url === '/webhook/pipeline' && req.method === 'POST') {
       const body = await readBody(req);
