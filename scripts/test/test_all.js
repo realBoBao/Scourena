@@ -42,7 +42,7 @@ try {
 // 4. Test Job Scraper (just fetch, no webhook)
 console.log('\n--- 4. Job Scraper ---');
 try {
-  const { findLatestRepo, fetchSimplifyJobs } = await import('../scripts/job_scraper.js');
+  const { fetchSimplifyJobs } = await import('../cron/job_scraper.js');
   // Can't test full flow without webhook, just check import
   console.log('✅ Job scraper: imports OK');
 } catch (err) {

@@ -308,7 +308,7 @@ cron.schedule('0 8,20 * * *', async () => {
   logger.info('[WebhookBot] Cron: Auto-push sources...');
   try {
     // Gọi nightly scraper để lấy sources mới
-    const { runNightlyScraper } = await import('./scripts/nightly_scraper.js');
+    const { runNightlyScraper } = await import('./cron/nightly_scraper.js');
     const result = await runNightlyScraper();
 
     if (result.stored > 0) {

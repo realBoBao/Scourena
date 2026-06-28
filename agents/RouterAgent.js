@@ -106,6 +106,13 @@ const AGENT_REGISTRY = {
     enabled: true,
     cost: 'low',
   },
+  actionable: {
+    name: 'ActionableAgent',
+    description: 'Function-calling agent — executes tools (sandbox, file, web, memory, shell)',
+    import: () => import('./ActionableAgent.js'),
+    enabled: true,
+    cost: 'medium',
+  },
   // ── Persona Agent (Tier 1: Lightweight, no RAG) ──
   persona: {
     name: 'PersonaAgent',
@@ -161,6 +168,10 @@ const INTENT_AGENT_MAP = {
   PLANNER: ['planner'],
   VISION_PLANNER: ['vision'],
   ANALYZE: ['analysis'],
+  ACTION: ['actionable'],
+  TOOL: ['actionable'],
+  SHELL: ['actionable'],
+  FILE: ['actionable'],
   // ── Persona Routing (Tier 1) ──
   THERAPIST: ['persona'],
   TECHNICAL: ['rag'],
