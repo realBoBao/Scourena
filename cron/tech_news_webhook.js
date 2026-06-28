@@ -2,12 +2,14 @@
 /**
  * cron/tech_news_webhook.js — Lightweight tech news digest (TẬP CON của Pipeline)
  *
- * Nguồn: HN + Reddit + GitHub + arXiv → gửi Discord
- * Smart fetch: retry + rate-limit + fallback
+ * Nguồn: HN + Reddit + GitHub + arXiv + Dev.to → gửi Discord
+ * Smart fetch: retry + rate-limit + fallback + duplicate emoji counter
  *
  * Usage: node cron/tech_news_webhook.js [topic]
  * Cron: 5x/day PDT (8AM, 11AM, 2PM, 5PM, 8PM)
  */
+
+import { recordSentUrl, getDuplicateEmoji } from '../lib/federated_search.js';
 
 import 'dotenv/config';
 import { httpGet, httpScrape, fetchText } from '../lib/http_client.js';
@@ -92,6 +94,26 @@ async function fetchArXiv(query, limit = 5) {
   }));
 }
 
+// ── SearXNG (self-hosted meta-search) ──
+async function fetchSearXNG(query, limit = 5) {
+  const baseUrl = process.env.SEARXNG_URL || 'http://localhost:8080';
+  try {
+    const res = await fetch(
+      `${baseUrl}/search?q=${encodeURIComponent(query)}&format=json&categories=general&time_range=week`,
+      { headers: { 'User-Agent': 'Serena-Brain/1.0' } }
+    );
+    if (!res.ok) return [];
+    const d = await res.json();
+    return (d.results || []).slice(0, limit).map(r => ({
+      title: r.title || 'Untitled',
+      url: r.url || '',
+      description: (r.content || '').slice(0, 200),
+      source: 'SearXNG',
+      score: r.score ? Math.min(1, r.score) : 0.75,
+    }));
+  } catch { return []; }
+}
+
 function pickRandomTopic() {
   return TECH_TOPICS[Math.floor(Math.random() * TECH_TOPICS.length)];
 }
@@ -107,11 +129,12 @@ export async function runTechNews() {
 
   console.log(`[TechNews] Fetching: "${topic}"`);
 
-  const [hn, reddit, github, arxiv, domainSearch, devto, hnTop] = await Promise.all([
+  const [hn, reddit, github, arxiv, domainSearch, devto, hnTop, searxng] = await Promise.all([
     fetchHN(topic, 10), fetchReddit(topic, 10), fetchGitHub(topic, 10), fetchArXiv(topic, 5),
     searchTechDomains(topic, 10).catch(() => []),
     fetchDevTo(8).catch(() => []),
     fetchHNTopStories(8).catch(() => []),
+    fetchSearXNG(topic, 8).catch(() => []),
   ]);
 
   let all = [
@@ -122,6 +145,7 @@ export async function runTechNews() {
     ...domainSearch.map(n => ({ ...n, src: n.src || 'DDG', score: n.score || 0.7 })),
     ...devto.map(n => ({ ...n, src: 'Dev.to', score: 0.8 })),
     ...hnTop.map(n => ({ ...n, src: 'HN-Top', score: Math.min(1, n.pts / 300) })),
+    ...searxng.map(n => ({ ...n, src: 'SearXNG', score: n.score || 0.75 })),
   ];
 
   // ── Intra-run URL dedup ──
@@ -158,7 +182,9 @@ export async function runTechNews() {
 
   const lines = all.slice(0, 15).map((n, i) => {
     const bar = formatQualityBar(n.quality.score);
-    return `**${i + 1}.** ${n.quality.tag} [${n.src}] [${n.title.slice(0, 60)}](${n.url})\n   📊 ${bar}`;
+    const dupCount = recordSentUrl(n.url);
+    const dupEmoji = getDuplicateEmoji(dupCount);
+    return `**${i + 1}.** ${n.quality.tag} ${dupEmoji} [${n.src}] [${n.title.slice(0, 60)}](${n.url})\n   📊 ${bar}`;
   });
 
   const types = {};

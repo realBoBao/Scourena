@@ -12,6 +12,7 @@ import path from 'path';
 import { httpGet, httpPost } from '../lib/http_client.js';
 import { scoreContent, formatQualityBar } from '../lib/content_quality.js';
 import { fetchCodeforces, fetchHackerearth, fetchKontests } from '../lib/free_apis.js';
+import { recordSentUrl, getDuplicateEmoji } from '../lib/federated_search.js';
 
 const ALGO_WEBHOOK_URL = process.env.ALGO_WEBHOOK_URL;
 if (!ALGO_WEBHOOK_URL) {
@@ -188,7 +189,9 @@ async function sendDailyProblem() {
   if (topBonus.length > 0) {
     bonusText = '\n\n🎯 **Bonus Challenges:**\n';
     for (const p of topBonus) {
-      bonusText += `• [${p.title}](${p.url}) (${p.src}) ${p.quality.tag}\n`;
+      const dupCount = recordSentUrl(p.url);
+      const dupEmoji = getDuplicateEmoji(dupCount);
+      bonusText += `• ${dupEmoji} [${p.title}](${p.url}) (${p.src}) ${p.quality.tag}\n`;
     }
   }
 

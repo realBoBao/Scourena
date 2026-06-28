@@ -2,12 +2,15 @@
 /**
  * cron/job_scraper.js — Scrape job postings và gửi qua JOB_WEBHOOK_URL
  *
- * Nguồn: SimplifyJobs (GitHub), NewGradPositions, HackerNews, RemoteOK, WeWorkRemotely, Indeed (RSS), Free APIs
+ * Nguồn: SimplifyJobs (GitHub), NewGradPositions, HackerNews, RemoteOK, WeWorkRemotely, Free APIs
+ *         + Federated Search (Tavily, Jina, DDG, SearXNG) với LinkedIn/Indeed via Google Dorking
  * Usage: node cron/job_scraper.js
  * Cron: 6AM + 12PM + 6PM PDT daily (via GitHub Actions)
  *
- * Smart fetch: retry + rate-limit + fallback
+ * Smart fetch: retry + rate-limit + fallback + duplicate emoji counter
  */
+
+import { recordSentUrl, getDuplicateEmoji, wasUrlSentRecently } from '../lib/federated_search.js';
 
 import 'dotenv/config';
 import { httpGet, httpPost, httpScrape } from '../lib/http_client.js';
@@ -346,7 +349,9 @@ async function main() {
   const jobLines = dedupedJobs.slice(0, 15).map((j, i) => {
     const link = j.link && j.link !== '#' ? `[Apply](${j.link})` : '';
     const qTag = j.quality ? j.quality.tag : '';
-    return `**${i + 1}.** ${qTag} [${j.source}] **${j.company}** — ${j.role} (${j.location}) ${link}`;
+    const dupCount = recordSentUrl(j.link);
+    const dupEmoji = getDuplicateEmoji(dupCount);
+    return `**${i + 1}.** ${qTag} ${dupEmoji} [${j.source}] **${j.company}** — ${j.role} (${j.location}) ${link}`;
   });
 
   // Use PDT date for consistency
