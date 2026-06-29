@@ -2653,7 +2653,9 @@ client.on(Events.MessageCreate, async (message) => {
         await waitingMsg.edit({ content: `❌ Lỗi recap: ${err?.message || err}`, allowedMentions: { parse: [] } });
       }
       return;
-    }\n\n    // Parse query + flags (--deep, --source=xxx)
+    }
+
+    // Parse query + flags (--deep, --source=xxx)
     const rawInput = message.content.slice(prefix.length).trim();
     if (!rawInput) {
       return message.reply({
