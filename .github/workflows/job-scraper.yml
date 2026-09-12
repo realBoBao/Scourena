@@ -1,0 +1,25 @@
+name: Job Alerts
+
+on:
+  schedule:
+    - cron: "0 13 * * *"
+    - cron: "0 19 * * *"
+    - cron: "0 1 * * *"
+  workflow_dispatch:
+
+jobs:
+  job-scraper:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm install --legacy-peer-deps --ignore-scripts
+      - name: Scrape and send job alerts
+        env:
+          JOB_WEBHOOK_URL: ${{ secrets.JOB_WEBHOOK_URL }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node cron/job_scraper.js
