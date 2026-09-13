@@ -16,7 +16,11 @@ jobs:
           node-version: "22"
           cache: npm
       - run: npm install --legacy-peer-deps --ignore-scripts
+      - name: Skip when webhook is not configured
+        if: ${{ secrets.ALGO_WEBHOOK_URL == '' }}
+        run: echo "ALGO_WEBHOOK_URL is not configured; skipping daily algo send."
       - name: Send daily algorithm problem
+        if: ${{ secrets.ALGO_WEBHOOK_URL != '' }}
         env:
           ALGO_WEBHOOK_URL: ${{ secrets.ALGO_WEBHOOK_URL }}
         run: node cron/algo_webhook.js daily
